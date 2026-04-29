@@ -6,14 +6,13 @@
 
 ## Supported Devices
 
-- OnePlus 8 OnePlus 8Pro OnePlus 8T OnePlus 9R(CN)
-- OnePlus 9 OnePlus 9Pro OnePlus 9RT (regularly tested on the OnePlus 9 Pro)
-- Oppo Find X3 Oppo Find X3 Pro
+- Snapdragon 865/870 devices: OnePlus 8 Series, OnePlus 9R (CN), OPPO Find X3
+- Snapdragon 888 devices: OnePlus 9 series (regularly tested on the OnePlus 9 Pro), OPPO Find X3 Pro
 
 ## Tested devices and port ROMs
-- Test Base ROM:  OnePlus 8T (ColorOS_14.0.0.600), OnePlus 8 (ColorOS_IN2010_13.1.190), OnePlus 8 Pro (ColorOS_IN2020_13.1.0.190), OnePlus 9 Pro (OxygenOS LE2123_14.0.0.600)
-- Test Port ROM: OnePlus 12 (ColorOS_14.0.0.800), OnePlus ACE3V(ColorOS_14.0.1.621), OnePlus 13T (ColorOS 16.0.2.400), OnePlus 10 Pro (OxygenOS_16.0.3.500)
-- Tested mixed parts: OnePlus 15 (OxygenOS_16.0.3.501)
+- Tested bases:  OnePlus 8T (KB2000_14.0.0.600), OnePlus 8 (IN2010_13.1.190), OnePlus 8 Pro (IN2020_13.1.0.190), OnePlus 9 Pro (LE2123_14.0.0.1902)
+- Test Port ROM: OnePlus 12 (ColorOS 14.0.0.800), OnePlus ACE3V(ColorOS 14.0.1.621), OnePlus 13T (ColorOS 16.0.2.400), OnePlus 10 Pro (OxygenOS 16.0.3.500), OnePlus 11 (OxygenOS 16.0.2.400), OnePlus 15 (ColorOS 16.0.5.702)
+- Tested mixed parts: OnePlus 15 (OxygenOS_16.0.3.501), OnePlus 12 (16.0.5.700)
 
 ## Working features
 - Face unlock
@@ -25,10 +24,14 @@
 
 
 ## Bugs
+### General
 - AOD is too dim (SM8250)
 - Voice trigger is not working
 - Poweroff charging is not working
 - WiredEarphone is not working
+### OS based issues
+- Apps cannot be pinned as a live alert (16.0.5+)
+- Classic AOD is broken (16.0.7+)
 
 ## How to use
 - On Debian based distros:
@@ -44,6 +47,7 @@
     # Start porting
     sudo ./port.sh <baserom> <portrom>
 ```
+WSL may work, but it is advised to use Linux on bare metal to maximise performance.
 - On Arch Linux based distros:
 ```shell
     sudo pacman -Syu git # Always keep your computer up to date!
