@@ -780,7 +780,7 @@ if [[  ${port_android_version} -ge 15 ]]; then
             build/portrom/images/odm/lib64/vendor.oplus.hardware.subsys_radio-V1-ndk_platform.so \
             build/portrom/images/odm/lib64/vendor.oplus.hardware.subsys-V1-ndk_platform.so
         blue "Fixing AOD"
-	unzip -o devices/common/aod_fix_sm8350.zip -d -d ${work_dir}/build/portrom/images/
+	unzip -o devices/common/aod_fix_sm8350.zip -d ${work_dir}/build/portrom/images/
     fi
 
     if [[ ${base_android_version} == 14 ]]; then
@@ -839,6 +839,11 @@ if [[ ! -f build/portrom/images/vendor/lib64/vendor.oplus.hardware.radio-V2-ndk_
     blue "Fixing RIL..."
     unzip -o devices/common/ril_fix_A16_SM8350.zip -d ${work_dir}/build/portrom/images/vendor/
     rm -rf build/portrom/images/vendor/*/vendor.oplus.hardware.radio-V1-ndk_platform.so
+fi
+
+if [[ ${port_oplusrom_confidential_version} == "V16.1.0" ]];then
+    blue "Fixing mediaserver crashes"
+    unzip -o devices/common/16.1-mediaserver-fix.zip -d build/portrom/images/ 
 fi
 
 echo "ro.surface_flinger.game_default_frame_rate_override=120" >>  build/portrom/images/vendor/default.prop
@@ -992,6 +997,7 @@ fi
 
 targetSettings=$(find build/portrom/images/ -name "Settings.apk")
 
+
 if [[ ${regionmark} != "CN" ]] && [[ ${base_product_model} != "IN20*" ]];then
     if [[ -f $targetSettings ]];then
         blue "Charging info in Settings"
@@ -1008,13 +1014,12 @@ if [[ ${regionmark} == "CN" ]] && [[ ${port_oplusrom_confidential_version} == "V
         blue "Forcing Settings to use 16.1.0 assets..."
         cp -rf $targetSettings tmp/$(basename $targetSettings).bak
         java -jar bin/apktool/APKEditor.jar d -f -i $targetSettings -o tmp/Settings $extra_args
-        targetSmali=$(find tmp -type f -name "AboutDeviceOtaUpdatePreference.smali")
-        python3 bin/patchmethod_v2.py $targetSmali isCurrentOSColorOS161Resources -return true
+        targetSmali=$(find tmp -type f OplusDeviceInfoUtils.smali")
+        python3 bin/patchmethod_v2.py $targetSmali shouldUseColorOS161Resources -return true
         java -jar bin/apktool/APKEditor.jar b -f -i tmp/Settings -o $targetSettings $extra_args
     fi
-    blue "Fixing mediaserver crashes"
-    unzip -o devices/common/16.1-mediaserver-fix.zip -d build/portrom/images/ 
 fi 
+java -jar bin/apktool/APKEditor.jar b -f -i tmp/Settings -o $targetSettings $extra_args
 
 targetOplusLauncher=$(find build/portrom/images/ -name "OplusLauncher.apk")
 
