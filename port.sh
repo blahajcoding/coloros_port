@@ -159,7 +159,7 @@ if [[ $mix_port == true ]];then
     if unzip -l ${portrom2} | grep  -q "payload.bin"; then
         green "第二个ROM初步检测通过" "ROM validation passed."
         portrom2_type="payload"
-	version_name2=$(unzip -p ${portrom2} META-INF/com/android/metadata | grep "version_name=" | cut -d = -f2)
+    version_name2=$(unzip -p ${portrom2} META-INF/com/android/metadata | grep "version_name=" | cut -d = -f2)
     elif unzip -l "${portrom2}" | grep -Eq "\.img$"; then
         portrom2_type="img"
         version_name2="$(basename "${portrom2%.*}")"
@@ -724,12 +724,12 @@ if [[ ${base_device_family} == "OPSM8250" ]] || [[ ${base_device_family} == "OPS
     #pushd tmp/services
     #patch -p1 < ${work_dir}/devices/${base_product_device}/0001-face-unlock-fix-for-op8t.patch
     #popd
-	if [[ -f devices/common/face_unlock_fix_common.zip ]];then
+    if [[ -f devices/common/face_unlock_fix_common.zip ]];then
         rm -rf build/portrom/images/vendor/overlay/*
         unzip -o devices/common/face_unlock_fix_common.zip -d ${work_dir}/build/portrom/images/
         
     fi
-	
+    
     if [[ -f $old_face_unlock_app ]]; then
         unzip -o ${work_dir}/devices/${base_product_device}/face_unlock_fix.zip -d ${work_dir}/build/portrom/images/
         rm -rf build/portrom/images/odm/lib/vendor.oneplus.faceunlock.hal@1.0.so
@@ -780,7 +780,7 @@ if [[  ${port_android_version} -ge 15 ]]; then
             build/portrom/images/odm/lib64/vendor.oplus.hardware.subsys_radio-V1-ndk_platform.so \
             build/portrom/images/odm/lib64/vendor.oplus.hardware.subsys-V1-ndk_platform.so
         blue "Fixing AOD"
-	unzip -o devices/common/aod_fix_sm8350.zip -d ${work_dir}/build/portrom/images/
+    unzip -o devices/common/aod_fix_sm8350.zip -d ${work_dir}/build/portrom/images/
     fi
 
     if [[ ${base_android_version} == 14 ]]; then
@@ -1018,18 +1018,19 @@ if [[ ${regionmark} == "CN" ]] && [[ ${port_oplusrom_confidential_version} == "V
         python3 bin/patchmethod_v2.py $targetSmali shouldUseColorOS161Resources -return true
         java -jar bin/apktool/APKEditor.jar b -f -i tmp/Settings -o $targetSettings $extra_args
     fi
-fi 
+fi
+ 
 java -jar bin/apktool/APKEditor.jar b -f -i tmp/Settings -o $targetSettings $extra_args
 
 targetOplusLauncher=$(find build/portrom/images/ -name "OplusLauncher.apk")
 
 if [[ -f $targetOplusLauncher ]] && [[ $base_product_first_api_level -gt 34 ]];then
-	blue "解锁运存显示"
-	cp -rf $targetOplusLauncher tmp/$(basename $targetOplusLauncher).bak
-	java -jar bin/apktool/APKEditor.jar d -f -i $targetOplusLauncher -o tmp/OplusLauncher $extra_args
-	targetSmali=$(find tmp -type f -path "*/com/oplus/basecommon/util/SystemPropertiesHelper.smali")
- python3 bin/patchmethod_v2.py $targetSmali getFirstApiLevel ".locals 1\n\tconst/16 v0, 0x22\n\treturn v0"
- java -jar bin/apktool/APKEditor.jar b -f -i tmp/OplusLauncher -o $targetOplusLauncher $extra_args
+     blue "解锁运存显示"
+     cp -rf $targetOplusLauncher tmp/$(basename $targetOplusLauncher).bak
+     java -jar bin/apktool/APKEditor.jar d -f -i $targetOplusLauncher -o tmp/OplusLauncher $extra_args
+     targetSmali=$(find tmp -type f -path "*/com/oplus/basecommon/util/SystemPropertiesHelper.smali")
+     python3 bin/patchmethod_v2.py $targetSmali getFirstApiLevel ".locals 1\n\tconst/16 v0, 0x22\n\treturn v0"
+     java -jar bin/apktool/APKEditor.jar b -f -i tmp/OplusLauncher -o $targetOplusLauncher $extra_args
 fi
 
 targetSystemUI=$(find build/portrom/images/ -name "SystemUI.apk")
@@ -1073,10 +1074,10 @@ fi
 targetAOD=$(find build/portrom/images/ -name "Aod.apk")
 
 if [[ -f $targetAOD ]] && [[ $base_product_first_api_level -le 35 ]] ;then
-	blue "强制开启老机型AOD全天候息屏功能"
-	cp -rf $targetAOD tmp/$(basename $targetAOD).bak
-	java -jar bin/apktool/APKEditor.jar d -f -i $targetAOD -o tmp/Aod $extra_args
-	targetCommonUtilsSmali=$(find tmp -type f -path "*/com/oplus/aod/util/CommonUtils.smali")
+    blue "强制开启老机型AOD全天候息屏功能"
+    cp -rf $targetAOD tmp/$(basename $targetAOD).bak
+    java -jar bin/apktool/APKEditor.jar d -f -i $targetAOD -o tmp/Aod $extra_args
+    targetCommonUtilsSmali=$(find tmp -type f -path "*/com/oplus/aod/util/CommonUtils.smali")
     targetSettingsSmali=$(find tmp -type f -path "*/com/oplus/aod/util/SettingsUtils.smali")
     python3 bin/patchmethod_v2.py $targetCommonUtilsSmali isSupportFullAod -return true
     python3 bin/patchmethod_v2.py $targetCommonUtilsSmali isFirstApiLevelOS16 -return true
@@ -1761,7 +1762,7 @@ for file in $(find build/baserom/images/my_product/etc/ -type f -name "OVMS_*");
 done
 #fix chinese char
 find build/portrom/images/config -type f -name "*file_contexts" \
-	    -exec perl -i -ne 'print if /^[\x00-\x7F]+$/' {} \;
+        -exec perl -i -ne 'print if /^[\x00-\x7F]+$/' {} \;
 #find build/portrom/images/config -type f -name "*file_contexts" -exec sed -i -E '/[\x{4e00}-\x{9fa5}]/d' {} \;
 
 # bootanimation
@@ -1826,7 +1827,7 @@ add_feature "oplus.software.display.sec_max_brightness_rm" build/portrom/images/
     echo "# 扬声器清理"
     echo "ro.oplus.audio.speaker_clean=true"
     echo "ro.vendor.oplus.radio.use_nitz_name=true"
-    # FIXME A16 crash with AndroidRuntime: 	at com.android.server.display.feature.panel.OplusFeatureDCBacklight.applyApolloDCMode(OplusFeatureDCBacklight.java:300)
+    # FIXME A16 crash with AndroidRuntime:     at com.android.server.display.feature.panel.OplusFeatureDCBacklight.applyApolloDCMode(OplusFeatureDCBacklight.java:300)
     #echo "persist.brightness.apollo=1"
 
 } >> build/portrom/images/my_product/etc/bruce/build.prop
@@ -2113,17 +2114,17 @@ if [[ ${remove_data_encrypt} == "true" ]];then
     DECRYPTRD="-DECRYPTED"
     blue "去除data加密"
     for fstab in $(find build/portrom/images -type f -name "fstab.*");do
-		blue "Target: $fstab"
-		sed -i "s/,fileencryption=aes-256-xts:aes-256-cts:v2+inlinecrypt_optimized+wrappedkey_v0//g" $fstab
-		sed -i "s/,fileencryption=aes-256-xts:aes-256-cts:v2+emmc_optimized+wrappedkey_v0//g" $fstab
-		sed -i "s/,fileencryption=aes-256-xts:aes-256-cts:v2//g" $fstab
-		sed -i "s/,metadata_encryption=aes-256-xts:wrappedkey_v0//g" $fstab
-		sed -i "s/,fileencryption=aes-256-xts:wrappedkey_v0//g" $fstab
-		sed -i "s/,metadata_encryption=aes-256-xts//g" $fstab
-		sed -i "s/,fileencryption=aes-256-xts//g" $fstab
+        blue "Target: $fstab"
+        sed -i "s/,fileencryption=aes-256-xts:aes-256-cts:v2+inlinecrypt_optimized+wrappedkey_v0//g" $fstab
+        sed -i "s/,fileencryption=aes-256-xts:aes-256-cts:v2+emmc_optimized+wrappedkey_v0//g" $fstab
+        sed -i "s/,fileencryption=aes-256-xts:aes-256-cts:v2//g" $fstab
+        sed -i "s/,metadata_encryption=aes-256-xts:wrappedkey_v0//g" $fstab
+        sed -i "s/,fileencryption=aes-256-xts:wrappedkey_v0//g" $fstab
+        sed -i "s/,metadata_encryption=aes-256-xts//g" $fstab
+        sed -i "s/,fileencryption=aes-256-xts//g" $fstab
         sed -i "s/,fileencryption=ice//g" $fstab
-		sed -i "s/fileencryption/encryptable/g" $fstab
-	done
+        sed -i "s/fileencryption/encryptable/g" $fstab
+    done
 fi
 
 # for pname in ${port_partition};do
@@ -2335,7 +2336,7 @@ if [[ $pack_method == "stock" ]];then
             cp -rf build/baserom/ffu_tool out/target/product/${base_product_device}/storage-fw
         else
             cp -rf build/baserom/ffu_tool out/target/product/${base_product_device}/
-	fi
+    fi
 
         export OUT=$(pwd)/out/target/product/${base_product_device}/
         if [[ -f devices/${base_product_device}/releasetools.py ]];then
@@ -2374,7 +2375,7 @@ if [[ $pack_method == "stock" ]];then
     popd
     ziphash=$(md5sum out/${base_product_device}-ota_full-${port_rom_version}-user-${port_android_version}.0.zip |head -c 10)
     mv -f out/${base_product_device}-ota_full-${port_rom_version}-user-${port_android_version}.0.zip out/$target_folder/ota_full-${rom_version}-${port_product_model}-${pack_timestamp}-$regionmark-${portrom_version_security_patch}-${ziphash}.zip
-	blue "打包完成： out/$target_folder/ota_full-${rom_version}-${port_product_model}-${pack_timestamp}-$regionmark-${portrom_version_security_patch}-${ziphash}.zip"
+    blue "打包完成： out/$target_folder/ota_full-${rom_version}-${port_product_model}-${pack_timestamp}-$regionmark-${portrom_version_security_patch}-${ziphash}.zip"
 else
    if [[ $is_ab_device == true ]]; then
         # 打包 super.img
