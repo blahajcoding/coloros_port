@@ -1014,7 +1014,7 @@ if [[ ${regionmark} == "CN" ]] && [[ ${port_oplusrom_confidential_version} == "V
         blue "Forcing Settings to use 16.1.0 assets..."
         cp -rf $targetSettings tmp/$(basename $targetSettings).bak
         java -jar bin/apktool/APKEditor.jar d -f -i $targetSettings -o tmp/Settings $extra_args
-        targetSmali=$(find tmp -type f OplusDeviceInfoUtils.smali")
+        targetSmali=$(find tmp -type f "OplusDeviceInfoUtils.smali")
         python3 bin/patchmethod_v2.py $targetSmali shouldUseColorOS161Resources -return true
         java -jar bin/apktool/APKEditor.jar b -f -i tmp/Settings -o $targetSettings $extra_args
     fi
