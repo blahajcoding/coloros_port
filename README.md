@@ -31,7 +31,7 @@
 - WiredEarphone is not working
 ### OS based issues
 - Apps cannot be pinned as a live alert (16.0.5+)
-- Classic AOD is broken (16.0.7+)
+- Video recording is broken (legacy OnePlus Camera app)
 
 ## How to use
 - On Debian based distros:

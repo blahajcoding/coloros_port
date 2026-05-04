@@ -779,6 +779,8 @@ if [[  ${port_android_version} -ge 15 ]]; then
             build/portrom/images/odm/lib/vendor.oplus.hardware.subsys-V1-ndk_platform.so \
             build/portrom/images/odm/lib64/vendor.oplus.hardware.subsys_radio-V1-ndk_platform.so \
             build/portrom/images/odm/lib64/vendor.oplus.hardware.subsys-V1-ndk_platform.so
+        blue "Fixing AOD"
+	unzip -o devices/common/aod_fix_sm8350.zip -d -d ${work_dir}/build/portrom/images/
     fi
 
     if [[ ${base_android_version} == 14 ]]; then
