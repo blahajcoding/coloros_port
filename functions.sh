@@ -998,3 +998,12 @@ add_module() {
     unzip -o cache/${module_name}/files.zip -d ${module_files}
     source cache/${module_name}/script.sh
 }
+
+resolveDownloadCheck() {
+    link=$1
+    curl -Lsv -I --compressed -H "userId: oplus-ota|16002018" -H "User-Agent: okhttp/3.12.12" -H "Accept: */*" -H "Connection: Keep-Alive" "${link}" 2>&1 | grep -i "< location:" | awk '{print $3}' | tr -d '\r'
+}
+
+fetchOTA() {
+    python tomboy_lite.py --anti 1 --mode taste $1 $2 | grep downloadCheck
+}

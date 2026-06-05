@@ -28,6 +28,9 @@ source functions.sh
 
 check unzip aria2c 7z zip java python3 zstd bc xmlstarlet
 
+blue "Initialising submodules"
+git submodule update --init
+
 # 可在 bin/port_config 中更改
 port_partition=$(grep "partition_to_port" bin/port_config |cut -d '=' -f 2)
 super_list=$(grep "possible_super_list" bin/port_config |cut -d '=' -f 2)
@@ -997,6 +1000,22 @@ fi
 
 targetSettings=$(find build/portrom/images/ -name "Settings.apk")
 
+if [[ $port_android_version -gt 16 ]];then
+    if [[ -f $targetSettings ]];then
+        blue "Adding credits to ROM version (shoutout to tg/tenseimods!)"
+        cp -rf $targetSettings tmp/$(basename $targetSettings).bak
+        java -jar bin/apktool/APKEditor.jar d -f -i $targetSettings -o tmp/Settings $extra_args
+        targetSmali=$(find tmp -type f -name "AboutDeviceOtaUpdatePreference.smali")
+        python3 bin/patchmethod.py $targetSmali updateOsVersion "    .registers 3
+        const-string v0, \"${port_oplusrom_version} | lemonadeports\"
+        iget-object p0, p0, Lcom/oplus/settings/widget/preference/AboutDeviceOtaUpdatePreference;->mModelBuildNumber:Landroid/widget/TextView;
+        if-eqz p0, :cond_b
+        invoke-virtual {p0, v0}, Landroid/widget/TextView;->setText(Ljava/lang/CharSequence;)V
+        :cond_b
+        return-void"
+        java -jar bin/apktool/APKEditor.jar b -f -i tmp/Settings -o $targetSettings $extra_args
+    fi
+fi
 
 if [[ ${regionmark} != "CN" ]] && [[ ${base_product_model} != "IN20*" ]];then
     if [[ -f $targetSettings ]];then
@@ -1008,19 +1027,6 @@ if [[ ${regionmark} != "CN" ]] && [[ ${base_product_model} != "IN20*" ]];then
         java -jar bin/apktool/APKEditor.jar b -f -i tmp/Settings -o $targetSettings $extra_args
     fi
 fi 
-
-if [[ ${regionmark} == "CN" ]] && [[ ${port_oplusrom_confidential_version} == "V16.1.0" ]];then
-    if [[ -f $targetSettings ]];then
-        blue "Forcing Settings to use 16.1.0 assets..."
-        cp -rf $targetSettings tmp/$(basename $targetSettings).bak
-        java -jar bin/apktool/APKEditor.jar d -f -i $targetSettings -o tmp/Settings $extra_args
-        targetSmali=$(find tmp -type f "OplusDeviceInfoUtils.smali")
-        python3 bin/patchmethod_v2.py $targetSmali shouldUseColorOS161Resources -return true
-        java -jar bin/apktool/APKEditor.jar b -f -i tmp/Settings -o $targetSettings $extra_args
-    fi
-fi
- 
-java -jar bin/apktool/APKEditor.jar b -f -i tmp/Settings -o $targetSettings $extra_args
 
 targetOplusLauncher=$(find build/portrom/images/ -name "OplusLauncher.apk")
 
@@ -1308,11 +1314,6 @@ cp -rf build/baserom/images/my_product/etc/fusionlight_profile/*  build/portrom/
 
 sed -i "/persist.vendor.display.pxlw.iris_feature=.*/d" build/portrom/images/my_product/etc/bruce/build.prop
 
-if grep -q "ro.build.version.oplusrom.display" build/portrom/images/my_manifest/build.prop;then
-    sed -i '/^ro.build.version.oplusrom.display=/ s/$/ | lemonadeports/' build/portrom/images/my_manifest/build.prop
-else
-    sed -i '/^ro.build.version.oplusrom.display=/ s/$/ | lemonadeports/' build/portrom/images/my_product/etc/bruce/build.prop
-fi
 
 propfile="build/portrom/images/my_product/etc/bruce/build.prop"
 
@@ -2371,7 +2372,7 @@ if [[ $pack_method == "stock" ]];then
     pushd otatools
     export PATH=$(pwd)/bin/:$PATH
     mkdir -p ${work_dir}/out/$target_folder
-    ./bin/ota_from_target_files ${work_dir}/out/target/product/${base_product_device}/ ${work_dir}/out/${base_product_device}-ota_full-${port_rom_version}-user-${port_android_version}.0.zip
+    ./bin/ota_from_target_files --max_threads=$(nproc) --enable_zucchini=false --enable_lz4diff=false ${work_dir}/out/target/product/${base_product_device}/ ${work_dir}/out/${base_product_device}-ota_full-${port_rom_version}-user-${port_android_version}.0.zip
     popd
     ziphash=$(md5sum out/${base_product_device}-ota_full-${port_rom_version}-user-${port_android_version}.0.zip |head -c 10)
     mv -f out/${base_product_device}-ota_full-${port_rom_version}-user-${port_android_version}.0.zip out/$target_folder/ota_full-${rom_version}-${port_product_model}-${pack_timestamp}-$regionmark-${portrom_version_security_patch}-${ziphash}.zip
