@@ -1000,7 +1000,7 @@ fi
 
 targetSettings=$(find build/portrom/images/ -name "Settings.apk")
 
-if [[ $port_android_version -gt 16 ]];then
+if [[ $port_android_version -ge 16 ]];then
     if [[ -f $targetSettings ]];then
         blue "Adding credits to ROM version (shoutout to tg/tenseimods!)"
         cp -rf $targetSettings tmp/$(basename $targetSettings).bak
