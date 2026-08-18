@@ -2001,9 +2001,15 @@ if [[ $portIsOOS == true ]]; then
     for module in devices/${base_product_device}/modules/oos/*.sh; do
         add_module $module
     done
+    for module in devices/common/modules/oos/*.sh; do 
+        add_module $module
+    done
 fi
 if [[ $portIsColorOS == true ]]; then
     for module in devices/${base_product_device}/modules/cos/*.sh; do
+        add_module $module
+    done
+    for module in devices/common/modules/cos/*.sh; do
         add_module $module
     done
 fi
@@ -2011,9 +2017,15 @@ if [[ $portIsColorOSGlobal == true ]]; then
     for module in devices/${base_product_device}/modules/cos-global/*.sh; do
         add_module $module
     done
+    for module in devices/common/modules/cos-global/*.sh; do
+        add_module $module
+    done
 fi
 if [[ $portIsRealmeUI == true ]]; then
     for module in devices/${base_product_device}/modules/rui/*.sh; do
+        add_module $module
+    done
+    for module in devices/common/modules/rui/*.sh; do   
         add_module $module
     done
 fi
