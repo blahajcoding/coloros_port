@@ -507,13 +507,12 @@ else
 fi
 
 if [[ ! -f build/portrom/images/system/system/bin/app_process32 && -n "$vendor_cpu_abilist32" ]]; then
-    #blue "64bit only portrom detected. convert vendor to 64bit-only"
-    #sed -i "s/ro.vendor.product.cpu.abilist=.*/ro.vendor.product.cpu.abilist=arm64-v8a/g" build/portrom/images/vendor/build.prop
-    #sed -i "s/ro.vendor.product.cpu.abilist32=.*/ro.vendor.product.cpu.abilist32=/g" build/portrom/images/vendor/build.prop
-    #sed -i "s/ro.zygote=.*/ro.zygote=zygote64/g" build/portrom/images/vendor/default.prop
-    #cp -rfv devices/32-libs/* build/portrom/images/
     blue "64bit only portrom detected"
     unzip -o devices/common/32bit-compatibility.zip -d build/portrom/images/
+    sed -i "s/ro.vendor.product.cpu.abilist=.*/ro.vendor.product.cpu.abilist=arm64-v8a/g" build/portrom/images/vendor/build.prop
+    sed -i "s/ro.vendor.product.cpu.abilist32=.*/ro.vendor.product.cpu.abilist32=/g" build/portrom/images/vendor/build.prop
+    sed -i "s/ro.zygote=.*/ro.zygote=zygote64/g" build/portrom/images/vendor/default.prop
+    echo "ro.mediaserver.64b.enable=true" >> build/portrom/images/system/system/build.prop
 fi
 
 if [[ -f devices/${base_product_device}/config ]];then
@@ -1990,6 +1989,10 @@ if [[ -f "devices/${base_product_device}/odm_selinux_fix_a16.zip" ]] && [[ $port
 fi
 
 # Modules
+for module in devices/common/modules/*.sh; do
+    add_module $module
+done
+
 for module in devices/${base_product_device}/modules/*.sh; do
     add_module $module
 done

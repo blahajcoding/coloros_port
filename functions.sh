@@ -986,9 +986,13 @@ add_module() {
     source $1
     if [[ $port_android_version -ge $module_required_android_version ]]; then
         continue
+    else
+        return 0
     fi
     if [[ $module_requires_experimental -eq $experimental ]]; then
         continue
+    else
+        return 0
     fi
     blue "模块: ${module_display_name_cn}" "Module: ${module_display_name}"
     mkdir -p cache/${module_name}
