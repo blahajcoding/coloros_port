@@ -983,24 +983,49 @@ trap 'error "强制中断脚本运行，以免误删重要文件！" "Script int
 
 
 add_module() {
-    source $1
-    if [[ $port_android_version -ge $module_required_android_version ]]; then
-        continue
-    else
-        return 0
-    fi
-    if [[ $module_requires_experimental -eq $experimental ]]; then
-        continue
-    else
-        return 0
-    fi
-    blue "模块: ${module_display_name_cn}" "Module: ${module_display_name}"
-    mkdir -p cache/${module_name}
-    curl -L ${module_repo}/raw/refs/heads/${module_repo_branch}/${module_name}/files.zip -o cache/${module_name}/files.zip
-    curl -L ${module_repo}/raw/refs/heads/${module_repo_branch}/${module_name}/script.sh -o cache/${module_name}/script.sh
-    module_files=cache/${module_name}/files
-    unzip -o cache/${module_name}/files.zip -d ${module_files}
-    source cache/${module_name}/script.sh
+	local config_file="$1"
+	
+	[ -f "$config_file" ] || return 0
+	
+	module_name=""
+	module_display_name=""
+	module_display_name_cn=""
+	module_repo=""
+	module_repo_branch="main"
+	module_required_android_version=0
+	module_requires_experimental=0
+	
+	source "$config_file"
+	
+	if [[ -z "$module_name" ]]; then
+		module_name=$(basename "$config_file" .sh)
+	fi
+	
+	if [[ "$module_required_android_version" -gt 0 ]] && [[ "$port_android_version" -lt "$module_required_android_version" ]]; then
+		return 0
+	fi
+	
+	if [[ -n "$module_requires_experimental" ]] && [[ "$module_requires_experimental" -ne "$experimental" ]]; then
+		return 0
+	fi
+	
+	blue "模块: ${module_display_name_cn:-$module_name}" "Module: ${module_display_name:-$module_name}"
+	
+	mkdir -p "cache/${module_name}/files"
+	local module_files="cache/${module_name}/files"
+	
+	curl -sSL -f "${module_repo}/raw/refs/heads/${module_repo_branch}/${module_name}/files.zip" -o "cache/${module_name}/files.zip" 2>/dev/null
+	if [ -f "cache/${module_name}/files.zip" ]; then
+		unzip -qo "cache/${module_name}/files.zip" -d "${module_files}" 2>/dev/null || true
+	fi
+	
+	curl -sSL -f "${module_repo}/raw/refs/heads/${module_repo_branch}/${module_name}/script.sh" -o "cache/${module_name}/script.sh" 2>/dev/null
+	
+	if [ -f "cache/${module_name}/script.sh" ]; then
+		source "cache/${module_name}/script.sh"
+	else
+		yellow "Failed to download script.sh for ${module_name}"
+	fi
 }
 
 resolveDownloadCheck() {
