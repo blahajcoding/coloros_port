@@ -916,6 +916,33 @@ if [[ ${port_oplusrom_confidential_version} == "V16.1.0" ]];then
     unzip -o devices/common/16.1-mediaserver-fix.zip -d build/portrom/images/ 
 fi
 
+# CustCore.opex supplies the AppFeature provider used by OplusLauncher's
+# Seedling/Fluid Cloud pinning path. Its inner APK and outer OPEX are signed
+# separately, so even a length-preserving manifest edit makes the whole module
+# disappear at boot. Keep the original testOnly manifest and verify both OEM
+# signatures instead of modifying or re-signing either layer.
+if type fix_custcore_testonly &>/dev/null; then
+    fix_custcore_testonly || exit 1
+fi
+
+# The device keeps the base ROM's vendor, but SELinux labels for vendor-side
+# services/properties live there too - so everything the port ROM introduced
+# ends up unlabelled and gets denied (measured: 214 denials, of which 10 of the
+# 11 denied services were exactly the labels missing from the base vendor).
+# Merge the port ROM's context entries in, declaring any type the base policy
+# does not know about. Base labels are never overwritten.
+preserve_base_selinux_compat_mappings || exit 1
+
+if [[ "$port_device_stack_compatible" != "true" ]] && \
+   [[ ${port_android_version} -gt ${base_android_version} ]] && \
+   type merge_vendor_selinux_contexts &>/dev/null; then
+    blue "合并 SELinux 上下文 (A${base_android_version} vendor + A${port_android_version} services)" \
+         "Merging SELinux contexts (A${base_android_version} vendor + A${port_android_version} services)"
+    if extract_port_vendor_for_selinux "${portrom}" "${work_dir}/tmp/portvendor"; then
+        merge_vendor_selinux_contexts
+    fi
+fi
+
 echo "ro.surface_flinger.game_default_frame_rate_override=120" >>  build/portrom/images/vendor/default.prop
 #Unlock AI Call
 #targetAICallAssistant=$(find build/portrom/images/ -name "HeyTapSpeechAssist.apk")
@@ -2306,6 +2333,8 @@ fi
 #     rm -rf build/portrom/images/${pname}.img
 # done
 echo "${pack_type}">fstype.txt
+validate_split_selinux_policy || exit 1
+validate_critical_port_artifacts || exit 1
 if [[ $super_extended == true ]];then
     superSize=$(bash bin/getSuperSize.sh "others")
 elif [[ $base_product_model == "KB2000" ]] && [[ "$is_ab_device" == false ]] ; then

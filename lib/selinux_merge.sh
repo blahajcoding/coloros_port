@@ -293,3 +293,212 @@ grant_port_client_access() {
         green "  追加 ${added} 条客户端访问规则" "  Added ${added} client access rules"
     return 0
 }
+
+# A cross-version port combines the PORTROM platform policy with the selected
+# vendor/odm policy.  init reads the vendor policy version from
+# plat_sepolicy_vers.txt and unconditionally opens the matching platform
+# mapping from /system.  New platform images can legitimately stop shipping
+# mappings for old vendor versions, even though the BASEROM still needs them.
+#
+# Preserve the exact BASEROM compatibility files for the vendor version that
+# will actually ship.  Existing PORTROM files win; we only fill omissions.
+_set_compat_mapping_file_context() {
+    local port_root="$1" part="$2" version="$3" suffix="$4"
+    local contexts="${port_root}/config/${part}_file_contexts"
+    local image_path escaped_path
+
+    [[ -f "$contexts" ]] || return 0
+    case "$part" in
+        system) image_path="/system/system/etc/selinux/mapping/${version}${suffix}" ;;
+        *) image_path="/${part}/etc/selinux/mapping/${version}${suffix}" ;;
+    esac
+    escaped_path="${image_path//./\\.}"
+
+    # Remove an exact-path fallback label emitted by contextpatch.py, then add
+    # the label used by all existing platform mapping files.
+    sed -i "\\|^${escaped_path}[[:space:]]|d" "$contexts"
+    printf '%s %s\n' "$escaped_path" 'u:object_r:sepolicy_file:s0' >> "$contexts"
+}
+
+preserve_base_selinux_compat_mappings() {
+    local base_root="${1:-build/baserom/images}"
+    local port_root="${2:-build/portrom/images}"
+    local version_file="${port_root}/vendor/etc/selinux/plat_sepolicy_vers.txt"
+    local version
+
+    if [[ ! -r "$version_file" ]]; then
+        error "缺少 vendor SELinux 版本文件: ${version_file}" \
+              "Missing vendor SELinux version file: ${version_file}"
+        return 1
+    fi
+
+    IFS= read -r version < "$version_file"
+    version="${version//$'\r'/}"
+    if [[ ! "$version" =~ ^[0-9]+\.[0-9]+$ ]]; then
+        error "无效的 vendor SELinux 版本: ${version}" \
+              "Invalid vendor SELinux version: ${version}"
+        return 1
+    fi
+
+    blue "保留 vendor ${version} 所需的 SELinux mapping" \
+         "Preserving SELinux mappings required by vendor ${version}"
+
+    local part base_dir port_dir suffix copied=0
+    for part in system system_ext product; do
+        case "$part" in
+            system)
+                base_dir="${base_root}/system/system/etc/selinux/mapping"
+                port_dir="${port_root}/system/system/etc/selinux/mapping"
+                ;;
+            *)
+                base_dir="${base_root}/${part}/etc/selinux/mapping"
+                port_dir="${port_root}/${part}/etc/selinux/mapping"
+                ;;
+        esac
+
+        mkdir -p "$port_dir"
+        for suffix in .cil .compat.cil; do
+            if [[ -f "${port_dir}/${version}${suffix}" ]]; then
+                _set_compat_mapping_file_context \
+                    "$port_root" "$part" "$version" "$suffix"
+                continue
+            fi
+            if [[ -f "${base_dir}/${version}${suffix}" ]]; then
+                cp -p "${base_dir}/${version}${suffix}" \
+                      "${port_dir}/${version}${suffix}" || return 1
+                green "  ${part}: 添加 ${version}${suffix}" \
+                      "  ${part}: added ${version}${suffix}"
+                _set_compat_mapping_file_context \
+                    "$port_root" "$part" "$version" "$suffix"
+                copied=$((copied + 1))
+            fi
+        done
+    done
+
+    # Unlike system_ext/product mappings, the platform mapping is not optional
+    # in init's OpenSplitPolicy().  Failing here prevents a guaranteed
+    # first-stage InitFatalReboot instead of producing a known-bad ROM.
+    local required="${port_root}/system/system/etc/selinux/mapping/${version}.cil"
+    if [[ ! -s "$required" ]]; then
+        error "缺少必需的 platform mapping: ${required}" \
+              "Required platform mapping is missing: ${required}"
+        return 1
+    fi
+
+    if (( copied == 0 )); then
+        blue "SELinux ${version} mapping 已完整" \
+             "SELinux ${version} mappings are already complete"
+    fi
+    return 0
+}
+
+# Compile the exact split policy that first-stage init will compile when the
+# precompiled policy hashes do not match.  This is deliberately a mandatory
+# pre-pack gate: file-existence checks alone missed a ROM that rebooted to the
+# bootloader before second-stage init because /system mapping/30.0.cil was
+# absent.
+validate_split_selinux_policy() {
+    local port_root="${1:-build/portrom/images}"
+    local version_file="${port_root}/vendor/etc/selinux/plat_sepolicy_vers.txt"
+    local version
+
+    [[ -r "$version_file" ]] || {
+        error "无法读取 ${version_file}" "Cannot read ${version_file}"
+        return 1
+    }
+    IFS= read -r version < "$version_file"
+    version="${version//$'\r'/}"
+    [[ "$version" =~ ^[0-9]+\.[0-9]+$ ]] || {
+        error "无效的 vendor SELinux 版本: ${version}" \
+              "Invalid vendor SELinux version: ${version}"
+        return 1
+    }
+
+    local plat="${port_root}/system/system/etc/selinux/plat_sepolicy.cil"
+    local mapping_dir="${port_root}/system/system/etc/selinux/mapping"
+    local vendor_dir="${port_root}/vendor/etc/selinux"
+    local system_ext_dir="${port_root}/system_ext/etc/selinux"
+    local product_dir="${port_root}/product/etc/selinux"
+    local odm_dir="${port_root}/odm/etc/selinux"
+
+    local required
+    for required in \
+        "$plat" \
+        "${mapping_dir}/${version}.cil" \
+        "${vendor_dir}/plat_pub_versioned.cil" \
+        "${vendor_dir}/vendor_sepolicy.cil"; do
+        if [[ ! -s "$required" ]]; then
+            error "SELinux compile 输入缺失: ${required}" \
+                  "SELinux compile input is missing: ${required}"
+            return 1
+        fi
+    done
+
+    local tmp_dir="${work_dir:-.}/tmp/selinux-compile-check"
+    local output="${tmp_dir}/sepolicy"
+    local log="${tmp_dir}/secilc.log"
+    mkdir -p "$tmp_dir"
+
+    # Android's split-policy loader uses policy version 30 on this GKI 1.0
+    # target.  Allow an explicit override for other target kernels.
+    local policy_version="${SELINUX_POLICY_VERSION:-30}"
+    local -a args=(
+        -m -M true -G -N -v -c "$policy_version"
+        "$plat"
+        "${mapping_dir}/${version}.cil"
+        -o "$output"
+        -f /dev/null
+    )
+
+    local optional_cil
+    for optional_cil in \
+        "${mapping_dir}/${version}.compat.cil" \
+        "${system_ext_dir}/system_ext_sepolicy.cil" \
+        "${system_ext_dir}/mapping/${version}.cil" \
+        "${system_ext_dir}/mapping/${version}.compat.cil" \
+        "${product_dir}/product_sepolicy.cil" \
+        "${product_dir}/mapping/${version}.cil" \
+        "${vendor_dir}/plat_pub_versioned.cil" \
+        "${vendor_dir}/vendor_sepolicy.cil" \
+        "${odm_dir}/odm_sepolicy.cil"; do
+        [[ -s "$optional_cil" ]] && args+=("$optional_cil")
+    done
+
+    local -a compilers=()
+    [[ -n "${SECILC_BIN:-}" ]] && compilers+=("$SECILC_BIN")
+    command -v secilc-modern >/dev/null 2>&1 && \
+        compilers+=("$(command -v secilc-modern)")
+    command -v secilc >/dev/null 2>&1 && \
+        compilers+=("$(command -v secilc)")
+    [[ -x "${work_dir:-.}/otatools/bin/secilc" ]] && \
+        compilers+=("${work_dir:-.}/otatools/bin/secilc")
+
+    local compiler candidate last_log="" duplicate existing
+    local -a seen_compilers=()
+    for candidate in "${compilers[@]}"; do
+        [[ -x "$candidate" ]] || continue
+        compiler=$(readlink -f "$candidate" 2>/dev/null || printf '%s' "$candidate")
+        duplicate=false
+        for existing in "${seen_compilers[@]}"; do
+            [[ "$existing" == "$compiler" ]] && duplicate=true
+        done
+        [[ "$duplicate" == true ]] && continue
+        seen_compilers+=("$compiler")
+
+        rm -f "$output" "$log"
+        if "$compiler" "${args[@]}" >"$log" 2>&1 && [[ -s "$output" ]]; then
+            green "SELinux split policy compile 成功: ${compiler}" \
+                  "SELinux split policy compile passed: ${compiler}"
+            sha256sum "$output" | sed 's/^/    /'
+            return 0
+        fi
+        last_log="$log"
+        yellow "secilc 不兼容或compile失败: ${compiler}" \
+               "secilc is incompatible or compile failed: ${compiler}"
+    done
+
+    [[ -s "$last_log" ]] && sed -n '1,120p' "$last_log" >&2
+    error "SELinux split policy compile失败。Android 17対応のsecilcをSECILC_BINで指定してください" \
+          "SELinux split policy compile failed. Set SECILC_BIN to an Android 17-capable secilc"
+    return 1
+}
