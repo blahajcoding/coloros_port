@@ -644,16 +644,17 @@ done
 
 
 old_face_unlock_app=$(find build/baserom/images/my_product -name "OPFaceUnlock.apk")
-if [[ -f build/${app_patch_folder}/patched/services.jar ]];then
+services_target="build/portrom/images/system/system/framework/services.jar"
+services_cache="build/${app_patch_folder}/patched/services.jar"
+if install_cached_dex_patch "$services_cache" "$services_target";then
     blue "复制已经处理过的services.jar"
-    cp -rfv build/${app_patch_folder}/patched/services.jar build/portrom/images/system/system/framework/services.jar
-elif [[ -f build/portrom/images/system/system/framework/services.jar ]];then 
+elif [[ -f "$services_target" ]];then
     if [[ ! -d tmp ]];then
         mkdir -p tmp/
     fi
 
     mkdir -p tmp/services/
-    cp -rf build/portrom/images/system/system/framework/services.jar tmp/services.jar
+    cp -f "$services_target" tmp/services.jar
     framework_res=$(find build/portrom/images/ -type f -name "framework-res.apk")
     extra_args=""
 
@@ -661,50 +662,70 @@ elif [[ -f build/portrom/images/system/system/framework/services.jar ]];then
         extra_args="-framework $framework_res"
     fi
 
-    java -jar bin/apktool/APKEditor.jar d -f -i tmp/services.jar -o tmp/services
+    if ! java -jar bin/apktool/APKEditor.jar d -f -i tmp/services.jar -o tmp/services;then
+        error "services.jar 反编译失败" "Failed to decompile services.jar"
+        exit 1
+    fi
 
 
     smalis=("ScanPackageUtils")
     methods=("--assertMinSignatureSchemeIsValid")
+    services_patch_count=0
 
     for (( i=0; i<${#smalis[@]}; i++ )); do
         smali="${smalis[i]}"
         method="${methods[i]}"
         
-        target_file=$(find tmp/services -type f -name "${smali}.smali")
+        target_file=$(find tmp/services -type f -name "${smali}.smali" -print -quit)
         echo "smali is $smali"
         echo "target_file is $target_file"
         
-        if [[ -f $target_file ]]; then
+        if [[ -f "$target_file" ]]; then
             for single_method in $method; do
-                python3 bin/patchmethod.py $target_file $single_method && echo "${target_file} patched successfully"
+                if ! python3 bin/patchmethod.py "$target_file" "$single_method";then
+                    error "services.jar 方法补丁失败: ${single_method}" \
+                          "services.jar method patch failed: ${single_method}"
+                    exit 1
+                fi
+                services_patch_count=$((services_patch_count + 1))
+                echo "${target_file} patched successfully"
             done
+        else
+            error "services.jar 中未找到 ${smali}.smali" \
+                  "${smali}.smali not found in services.jar"
+            exit 1
         fi
     done
 
-    target_method='getMinimumSignatureSchemeVersionForTargetSdk' 
-    old_smali_dir=""
-    declare -a smali_dirs
+    target_method='getMinimumSignatureSchemeVersionForTargetSdk'
 
-    while read -r smali_file; do
-        smali_dir=$(echo "$smali_file" | cut -d "/" -f 3)
-
-        if [[ $smali_dir != $old_smali_dir ]]; then
-            smali_dirs+=("$smali_dir")
-        fi
-
-        method_line=$(grep -n "$target_method" "$smali_file" | cut -d ':' -f 1)
-        register_number=$(tail -n +"$method_line" "$smali_file" | grep -m 1 "move-result" | tr -dc '0-9')
+    while IFS= read -r smali_file; do
+        method_line=$(grep -n -m1 "$target_method" "$smali_file" | cut -d ':' -f 1)
         move_result_end_line=$(awk -v ML=$method_line 'NR>=ML && /move-result /{print NR; exit}' "$smali_file")
-        original_line_number=$method_line
-        replace_with_command="const/4 v${register_number}, 0x0"
-        { sed -i "${original_line_number},${move_result_end_line}d" "$smali_file" && sed -i "${original_line_number}i\\${replace_with_command}" "$smali_file"; } && blue "${smali_file}  修改成功" "${smali_file} patched"
-        old_smali_dir=$smali_dir
-    done < <(find tmp/services/smali/*/com/android/server/pm/ tmp/services/smali/*/com/android/server/pm/pkg/parsing/ -maxdepth 1 -type f -name "*.smali" -exec grep -H "$target_method" {} \; | cut -d ':' -f 1)
+        if [[ -z "$method_line" || -z "$move_result_end_line" ]];then
+            error "无法解析 ${target_method}: ${smali_file}" \
+                  "Unable to parse ${target_method}: ${smali_file}"
+            exit 1
+        fi
+        register_name=$(sed -n "${move_result_end_line}p" "$smali_file" |
+            sed -n 's/.*move-result[^ ]* \([^,[:space:]]*\).*/\1/p')
+        if [[ -z "$register_name" ]];then
+            error "无法解析 ${target_method}: ${smali_file}" \
+                  "Unable to parse ${target_method}: ${smali_file}"
+            exit 1
+        fi
+        sed -i "${method_line},${move_result_end_line}d" "$smali_file"
+        sed -i "${method_line}i\\    const/4 ${register_name}, 0x0" "$smali_file"
+        services_patch_count=$((services_patch_count + 1))
+        blue "${smali_file}  修改成功" "${smali_file} patched"
+    done < <(
+        find tmp/services -type f -name '*.smali' \
+            -exec grep -l "$target_method" {} +
+    )
 
-    ALLOW_NON_PRELOADS_SYSTEM_SHAREDUIDS='ALLOW_NON_PRELOADS_SYSTEM_SHAREDUIDS' 
+    ALLOW_NON_PRELOADS_SYSTEM_SHAREDUIDS='ALLOW_NON_PRELOADS_SYSTEM_SHAREDUIDS'
 
-    find tmp/services/ -type f -name "ReconcilePackageUtils.smali" | while read smali_file; do
+    while IFS= read -r smali_file; do
         match_line=$(grep -n "sput-boolean .*${ALLOW_NON_PRELOADS_SYSTEM_SHAREDUIDS}" "$smali_file" | head -n 1)
 
         if [[ -n "$match_line" ]]; then
@@ -715,37 +736,70 @@ elif [[ -f build/portrom/images/system/system/framework/services.jar ]];then
 
             # 在该行前插入 const/4 vX, 0x1
             sed -i "${line_number}i\    const/4 $reg, 0x1" "$smali_file"
+            services_patch_count=$((services_patch_count + 1))
             echo "→ Patched successfully in $smali_file"
         else
             echo "× Not found in $smali_file"
         fi
-    done
+    done < <(find tmp/services/ -type f -name "ReconcilePackageUtils.smali")
 
-    java -jar bin/apktool/APKEditor.jar b -f -i tmp/services -o build/${app_patch_folder}/patched/services.jar 
-    cp -rfv build/${app_patch_folder}/patched/services.jar build/portrom/images/system/system/framework/services.jar
+    if [[ "$services_patch_count" -eq 0 ]];then
+        error "services.jar 没有应用任何补丁" "No services.jar patch was applied"
+        exit 1
+    fi
+    if ! java -jar bin/apktool/APKEditor.jar b -f -i tmp/services -o "$services_cache";then
+        error "services.jar 重编译失败" "Failed to rebuild services.jar"
+        exit 1
+    fi
+    validate_dex_archive "$services_cache" tmp/services.jar 1048576 || exit 1
+    cp -fv "$services_cache" "$services_target"
 
 fi
 
-if [[ -f build/${app_patch_folder}/patched/framework.jar ]];then
+framework_target="build/portrom/images/system/system/framework/framework.jar"
+framework_cache="build/${app_patch_folder}/patched/framework.jar"
+if install_cached_dex_patch "$framework_cache" "$framework_target";then
     blue "复制已经处理过的framework.jar"
-    cp -rfv build/${app_patch_folder}/patched/framework.jar build/portrom/images/system/system/framework/framework.jar
 else
-    cp -rf build/portrom/images/system/system/framework/framework.jar tmp/framework.jar
+    cp -f "$framework_target" tmp/framework.jar
     if [[ -f devices/common/0001-core-framework-Introduce-OplusPropsHookUtils-V6.patch ]]; then
-        java -jar bin/apktool/APKEditor.jar d -f -i tmp/framework.jar -o tmp/framework -no-dex-debug
-        pushd tmp/framework 
-        [[ -d .git ]] && rm -rf .git  
-        git init
+        if ! java -jar bin/apktool/APKEditor.jar d -f -i tmp/framework.jar -o tmp/framework -no-dex-debug;then
+            error "framework.jar 反编译失败" "Failed to decompile framework.jar"
+            exit 1
+        fi
+        instrumentation=$(find tmp/framework -type f \
+            -path '*/android/app/Instrumentation.smali' -print -quit)
+        if [[ ! -f "$instrumentation" ]];then
+            error "framework.jar 中未找到 Instrumentation.smali" \
+                  "Instrumentation.smali not found in framework.jar"
+            exit 1
+        fi
+        instrumentation_rel=${instrumentation#tmp/framework/}
+        pushd tmp/framework >/dev/null || exit 1
+        [[ -d .git ]] && rm -rf .git
+        git init -q
         git config user.name "patchuser"
         git config user.email "patchuser@example.com"
-        git add . > /dev/null 2>&1
-        git commit -m "Initial smali source" > /dev/null 2>&1
         echo "🔧 应用 patch 文件 0001-core-framework-Introduce-OplusPropsHookUtils-V6.patch ..."
-        git apply ${work_dir}/devices/common/0001-core-framework-Introduce-OplusPropsHookUtils-V6.patch && echo "✅ Patch 应用成功" || echo "❌ Patch 应用失败"
-
-        popd
-        java -jar bin/apktool/APKEditor.jar b -f -i tmp/framework -o build/${app_patch_folder}/patched/framework.jar 
-        cp -rfv build/${app_patch_folder}/patched/framework.jar build/portrom/images/system/system/framework/framework.jar
+        if ! sed "s|smali/classes/android/app/Instrumentation.smali|${instrumentation_rel}|g" \
+            "${work_dir}/devices/common/0001-core-framework-Introduce-OplusPropsHookUtils-V6.patch" |
+            git apply -;then
+            error "framework.jar 补丁应用失败" "Failed to apply framework.jar patch"
+            popd >/dev/null
+            exit 1
+        fi
+        popd >/dev/null || exit 1
+        if ! grep -q 'OplusPropsHookUtils;->setProps' "$instrumentation" ||
+           [[ ! -f tmp/framework/smali/classes5/com/android/internal/util/oplus/OplusPropsHookUtils.smali ]];then
+            error "framework.jar 补丁内容不完整" "framework.jar patch is incomplete"
+            exit 1
+        fi
+        if ! java -jar bin/apktool/APKEditor.jar b -f -i tmp/framework -o "$framework_cache";then
+            error "framework.jar 重编译失败" "Failed to rebuild framework.jar"
+            exit 1
+        fi
+        validate_dex_archive "$framework_cache" tmp/framework.jar 1048576 || exit 1
+        cp -fv "$framework_cache" "$framework_target"
     else
         echo "⚠️ 0001-core-framework-Introduce-OplusPropsHookUtils-V6.patch不存在，跳过补丁应用"
     fi
@@ -773,19 +827,37 @@ if [[ ${portIsOOS} == true ]];then
     echo "ro.control_privapp_permissions=" >> build/portrom/images/system/system/build.prop
 fi
 
-targetOplusService=$(find build/portrom/images/ -name "oplus-services.jar")
-if [[ -f build/${app_patch_folder}/patched/oplus-services.jar ]];then
+targetOplusService=$(find build/portrom/images/ -type f -name "oplus-services.jar" -print -quit)
+oplus_services_cache="build/${app_patch_folder}/patched/oplus-services.jar"
+if [[ -n "$targetOplusService" ]] &&
+   install_cached_dex_patch "$oplus_services_cache" "$targetOplusService";then
     blue "复制已经处理过的oplus-services.jar"
-    cp -rfv build/${app_patch_folder}/patched/oplus-services.jar $targetOplusService
 
-elif [[ -f $targetOplusService ]];then
+elif [[ -f "$targetOplusService" ]];then
     blue "Removing GSM Restriction"
-    cp -rf $targetOplusService tmp/$(basename $targetOplusService).bak
-    java -jar bin/apktool/APKEditor.jar d -f -i $targetOplusService -o tmp/OplusService
-    targetSmali=$(find tmp -type f -name "OplusBgSceneManager.smali")
-    python3 bin/patchmethod.py $targetSmali "-isGmsRestricted"
-    java -jar bin/apktool/APKEditor.jar b -f -i tmp/OplusService -o build/${app_patch_folder}/patched/oplus-services.jar
-    cp -rfv build/${app_patch_folder}/patched/oplus-services.jar $targetOplusService
+    cp -f "$targetOplusService" "tmp/$(basename "$targetOplusService").bak"
+    if ! java -jar bin/apktool/APKEditor.jar d -f -i "$targetOplusService" -o tmp/OplusService;then
+        error "oplus-services.jar 反编译失败" "Failed to decompile oplus-services.jar"
+        exit 1
+    fi
+    targetSmali=$(find tmp/OplusService -type f -name "OplusBgSceneManager.smali" -print -quit)
+    if [[ ! -f "$targetSmali" ]];then
+        error "oplus-services.jar 中未找到 OplusBgSceneManager.smali" \
+              "OplusBgSceneManager.smali not found in oplus-services.jar"
+        exit 1
+    fi
+    if ! python3 bin/patchmethod.py "$targetSmali" "-isGmsRestricted";then
+        error "oplus-services.jar 方法补丁失败" \
+              "oplus-services.jar method patch failed"
+        exit 1
+    fi
+    if ! java -jar bin/apktool/APKEditor.jar b -f -i tmp/OplusService -o "$oplus_services_cache";then
+        error "oplus-services.jar 重编译失败" "Failed to rebuild oplus-services.jar"
+        exit 1
+    fi
+    validate_dex_archive "$oplus_services_cache" \
+        "tmp/$(basename "$targetOplusService").bak" 1048576 || exit 1
+    cp -fv "$oplus_services_cache" "$targetOplusService"
 
 fi
 

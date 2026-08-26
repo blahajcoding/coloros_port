@@ -197,10 +197,112 @@ dedupe_selinux_contexts() {
     )
 }
 
+dex_archive_total_bytes() {
+    local archive="$1"
+    unzip -l "$archive" 2>/dev/null |
+        awk '$4 ~ /(^|\/)classes([0-9]+)?\.dex$/ { total += $1 }
+             END { print total + 0 }'
+}
+
+validate_dex_archive() {
+    local archive="$1"
+    local reference="${2:-}"
+    local minimum_bytes="${3:-1024}"
+
+    if [[ ! -f "$archive" ]] || ! unzip -tq "$archive" >/dev/null 2>&1; then
+        error "DEX archive 无效: ${archive}" "Invalid DEX archive: ${archive}"
+        return 1
+    fi
+
+    local -a dex_entries=()
+    mapfile -t dex_entries < <(
+        unzip -Z1 "$archive" 2>/dev/null |
+            awk '/(^|\/)classes([0-9]+)?\.dex$/ { print }'
+    )
+    if [[ ${#dex_entries[@]} -eq 0 ]]; then
+        error "DEX archive 不含 classes*.dex: ${archive}" \
+              "DEX archive has no classes*.dex: ${archive}"
+        return 1
+    fi
+
+    local dex_entry magic
+    for dex_entry in "${dex_entries[@]}"; do
+        magic=$(
+            unzip -p "$archive" "$dex_entry" 2>/dev/null |
+                dd bs=1 count=8 status=none 2>/dev/null |
+                od -An -tx1 |
+                tr -d ' \n'
+        )
+        case "$magic" in
+            6465780a30333500|6465780a30333600|6465780a30333700|\
+            6465780a30333800|6465780a30333900|6465780a30343000|\
+            6465780a30343100|6465780a30343200)
+                ;;
+            *)
+                error "DEX magic 无效: ${archive}:${dex_entry}" \
+                      "Invalid DEX magic: ${archive}:${dex_entry}"
+                return 1
+                ;;
+        esac
+    done
+
+    local archive_bytes reference_bytes
+    archive_bytes=$(dex_archive_total_bytes "$archive")
+    if [[ "$archive_bytes" -lt "$minimum_bytes" ]]; then
+        error "DEX 内容异常小: ${archive} (${archive_bytes} bytes)" \
+              "DEX payload is unexpectedly small: ${archive} (${archive_bytes} bytes)"
+        return 1
+    fi
+
+    if [[ -n "$reference" ]]; then
+        reference_bytes=$(dex_archive_total_bytes "$reference")
+        if [[ "$reference_bytes" -le 0 || $((archive_bytes * 2)) -lt "$reference_bytes" ]]; then
+            error "补丁 DEX 相对原文件异常缩小: ${archive}" \
+                  "Patched DEX shrank unexpectedly relative to its source: ${archive}"
+            return 1
+        fi
+    fi
+
+    return 0
+}
+
+install_cached_dex_patch() {
+    local cache="$1"
+    local target="$2"
+    [[ -f "$cache" ]] || return 1
+
+    if validate_dex_archive "$cache" "$target" 1048576; then
+        cp -f "$cache" "$target"
+        return 0
+    fi
+
+    local rejected="${cache}.invalid"
+    local suffix=0
+    while [[ -e "$rejected" ]]; do
+        suffix=$((suffix + 1))
+        rejected="${cache}.invalid.${suffix}"
+    done
+    mv -f "$cache" "$rejected"
+    yellow "拒绝损坏的补丁 cache: ${cache}" \
+           "Rejected corrupt patched-artifact cache: ${cache}"
+    return 1
+}
+
 validate_critical_port_artifacts() {
     local failed=0
     local mediaserver="build/portrom/images/system/system/bin/mediaserver"
     local codec2_rc="build/portrom/images/vendor/etc/init/vendor.qti.media.c2@1.0-service.rc"
+
+    local framework_jar services_jar oplus_services_jar critical_jar
+    framework_jar="build/portrom/images/system/system/framework/framework.jar"
+    services_jar="build/portrom/images/system/system/framework/services.jar"
+    oplus_services_jar=$(find build/portrom/images -type f -name oplus-services.jar -print -quit)
+    for critical_jar in "$framework_jar" "$services_jar" "$oplus_services_jar"; do
+        if [[ -z "$critical_jar" ]] ||
+           ! validate_dex_archive "$critical_jar" "" 1048576; then
+            failed=1
+        fi
+    done
 
     local systemui
     systemui=$(find build/portrom/images -type f -name SystemUI.apk -print -quit)
@@ -436,9 +538,11 @@ prepare_patch_cache() {
         sha256sum \
             port.sh \
             functions.sh \
+            bin/apktool/APKEditor.jar \
             bin/patchmethod.py \
             bin/patchmethod_v2.py \
             bin/clear_testonly.py \
+            devices/common/0001-core-framework-Introduce-OplusPropsHookUtils-V6.patch \
             lib/compat_fixes.sh \
             lib/opex_patch.sh \
             lib/selinux_merge.sh |
