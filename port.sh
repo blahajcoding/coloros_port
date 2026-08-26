@@ -2542,7 +2542,12 @@ if [[ $pack_method == "stock" ]];then
         echo $partname >> out/target/product/${base_product_device}/META/ab_partitions.txt
         if echo $super_list | grep -q -w "$partname"; then
             super_list_info+="$partname "
-            otatools/bin/map_file_generator $part ${part%.*}.map
+            # map_file_generator's block maps are not safe for the rebuilt
+            # compressed EROFS images produced above.  Passing those maps to
+            # delta_generator creates undersized payloads whose REPLACE_XZ
+            # operations fail to decode ("Corrupt xz file" / incomplete
+            # partition data).  A full OTA must describe the complete image.
+            rm -f "${part%.*}.map"
         fi
     done 
     rm -rf out/target/product/${base_product_device}/META/dynamic_partitions_info.txt
@@ -2649,9 +2654,35 @@ if [[ $pack_method == "stock" ]];then
     mkdir -p ${work_dir}/out/$target_folder
     ./bin/ota_from_target_files --max_threads=$(nproc) --enable_zucchini=false --enable_lz4diff=false ${work_dir}/out/target/product/${base_product_device}/ ${work_dir}/out/${base_product_device}-ota_full-${port_rom_version}-user-${port_android_version}.0.zip
     popd
-    ziphash=$(md5sum out/${base_product_device}-ota_full-${port_rom_version}-user-${port_android_version}.0.zip |head -c 10)
-    mv -f out/${base_product_device}-ota_full-${port_rom_version}-user-${port_android_version}.0.zip out/$target_folder/ota_full-${rom_version}-${port_product_model}-${pack_timestamp}-$regionmark-${portrom_version_security_patch}-${ziphash}.zip
-    blue "打包完成： out/$target_folder/ota_full-${rom_version}-${port_product_model}-${pack_timestamp}-$regionmark-${portrom_version_security_patch}-${ziphash}.zip"
+    if [ ! -f "out/${base_product_device}-ota_full-${port_rom_version}-user-${port_android_version}.0.zip" ]; then
+        error "ota_from_target_files 生成 zip 失败" "ota_from_target_files did not produce the OTA zip."
+        exit 1
+    fi
+    generated_ota="out/${base_product_device}-ota_full-${port_rom_version}-user-${port_android_version}.0.zip"
+    payload_verify_dir=$(mktemp -d "${work_dir}/tmp/payload-verify.XXXXXX")
+    if ! payload-dumper-go --partitions system,odm \
+        --output "${payload_verify_dir}" "${generated_ota}"; then
+        error "生成 OTA payload 无法提取" "Generated OTA payload could not be extracted."
+        rm -rf "${payload_verify_dir}"
+        exit 1
+    fi
+    for verify_part in system odm; do
+        expected_image="out/target/product/${base_product_device}/IMAGES/${verify_part}.img"
+        extracted_image="${payload_verify_dir}/${verify_part}.img"
+        if [[ ! -s "${extracted_image}" ]] ||
+           ! cmp -s "${expected_image}" "${extracted_image}"; then
+            error "生成 payload 分区数据不完整: ${verify_part}" \
+                  "Generated payload has incomplete partition data: ${verify_part}"
+            rm -rf "${payload_verify_dir}"
+            exit 1
+        fi
+    done
+    rm -rf "${payload_verify_dir}"
+    green "OTA payload 分区回读验证通过" \
+          "OTA payload partition round-trip verification passed"
+    ziphash=$(md5sum "${generated_ota}" |head -c 10)
+    mv -f "${generated_ota}" out/$target_folder/ota_full-${rom_version}-${port_product_model}-${pack_timestamp}-$regionmark-${portrom_version_security_patch}-${ziphash}.zip
+	blue "打包完成： out/$target_folder/ota_full-${rom_version}-${port_product_model}-${pack_timestamp}-$regionmark-${portrom_version_security_patch}-${ziphash}.zip"
 else
    if [[ $is_ab_device == true ]]; then
         # 打包 super.img
