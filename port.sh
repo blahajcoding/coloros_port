@@ -2132,8 +2132,11 @@ fi
 # 1. Restore the 30.0 SELinux compatibility mapping needed by first-stage init
 #    when an Android 11 vendor (SM8250/SM8350) is combined with A17 system.
 # 2. Allow renameat2 in qspm seccomp policy so qspmhal does not die with SIGSYS.
-# 3. Keep the A17 Wi-Fi APEX and set config_wifiChannelUtilizationOverrideEnabled
+# 3. Bridge the legacy /vendor/ueventd.rc through /vendor/etc/ueventd.rc,
+#    which is imported by the Android 17 platform ueventd rules.
+# 4. Keep the A17 Wi-Fi APEX and set config_wifiChannelUtilizationOverrideEnabled
 #    to true in the Oplus Wi-Fi RRO, avoiding the radioStats NPE.
+# 5. Label vendor overlays and /dev/ion for enforcing-mode Android 17 policy.
 if [[ ${port_android_version} == 17 ]];then
     blue "Android 17 兼容修复" "Android 17 compatibility fixes"
     mkdir -p build/diagnostics/a17-compat/originals
@@ -2170,6 +2173,101 @@ if [[ ${port_android_version} == 17 ]];then
             green "补齐 ${map_part}/${map_file}" "Installed ${map_part}/${map_file}"
         done
     done
+
+    # ueventd compatibility: Android 17's system/etc/ueventd.rc imports
+    # /vendor/etc/ueventd.rc, while the Android 11 SM8250 vendor keeps the
+    # actual rules at /vendor/ueventd.rc.  Without this bridge, the legacy
+    # device-node permissions and firmware_directories rules are skipped.
+    a17_vendor_ueventd_legacy="build/portrom/images/vendor/ueventd.rc"
+    a17_vendor_ueventd_compat="build/portrom/images/vendor/etc/ueventd.rc"
+    if [[ -f "${a17_vendor_ueventd_legacy}" ]];then
+        a17_install_ueventd=true
+        if [[ -f "${a17_vendor_ueventd_compat}" ]];then
+            if grep -Eq '^[[:space:]]*import[[:space:]]+/vendor/ueventd\.rc[[:space:]]*$' "${a17_vendor_ueventd_compat}";then
+                a17_install_ueventd=false
+                green "vendor ueventd 兼容桥已存在" "Vendor ueventd compatibility bridge already exists"
+            else
+                a17_vendor_ueventd_size=$(wc -c < "${a17_vendor_ueventd_compat}")
+                # Do not replace a complete modern vendor ueventd file.  Only
+                # replace the old empty/short stub with the import bridge.
+                if [[ ${a17_vendor_ueventd_size} -gt 1024 ]];then
+                    a17_install_ueventd=false
+                    yellow "保留现有完整 vendor/etc/ueventd.rc（${a17_vendor_ueventd_size} bytes）" \
+                        "Keeping existing complete vendor/etc/ueventd.rc (${a17_vendor_ueventd_size} bytes)"
+                fi
+            fi
+        fi
+        if [[ ${a17_install_ueventd} == true ]];then
+            a17_ueventd_backup="build/diagnostics/a17-compat/originals/vendor-ueventd.rc"
+            [[ -f "${a17_vendor_ueventd_compat}" && -f "${a17_ueventd_backup}" ]] || \
+                { [[ -f "${a17_vendor_ueventd_compat}" ]] && cp -p "${a17_vendor_ueventd_compat}" "${a17_ueventd_backup}"; }
+            mkdir -p "$(dirname "${a17_vendor_ueventd_compat}")"
+            printf '%s\n' \
+                '# Android 17 reads vendor uevent rules from /vendor/etc/ueventd.rc.' \
+                '# Import the legacy vendor layout used by this Android 11 device image.' \
+                'import /vendor/ueventd.rc' > "${a17_vendor_ueventd_compat}"
+            chmod 0644 "${a17_vendor_ueventd_compat}"
+            if ! grep -Eq '^import /vendor/ueventd\.rc$' "${a17_vendor_ueventd_compat}";then
+                error "vendor ueventd 兼容桥写入失败" "Failed to install vendor ueventd compatibility bridge"
+                exit 1
+            fi
+            green "已补齐 vendor/etc/ueventd.rc → /vendor/ueventd.rc 兼容桥" \
+                "Added vendor/etc/ueventd.rc -> /vendor/ueventd.rc compatibility bridge"
+        fi
+    else
+        yellow "缺少 legacy vendor/ueventd.rc，跳过 ueventd 兼容桥" \
+            "Legacy vendor/ueventd.rc is missing; skipping the ueventd bridge"
+    fi
+
+    # Android 17 asks hwservicemanager to start the legacy Qualcomm perf HIDL
+    # before class hal is started.  The SM8350 rc omits its interface stanza,
+    # so init cannot associate the request with perf-hal-2-2; repeated lookup
+    # requests then occupy init's control-message queue and starve keymaster /
+    # keystore during a clean metadata-encryption setup.
+    a17_perf_rc="build/portrom/images/vendor/etc/init/vendor.qti.hardware.perf@2.2-service.rc"
+    a17_perf_interface="vendor.qti.hardware.perf@2.2::IPerf default"
+    if [[ -f "${a17_perf_rc}" ]];then
+        a17_perf_backup="build/diagnostics/a17-compat/originals/vendor.qti.hardware.perf@2.2-service.rc"
+        [[ -f "${a17_perf_backup}" ]] || cp -p "${a17_perf_rc}" "${a17_perf_backup}"
+        if ! grep -Eq "^[[:space:]]*interface[[:space:]]+${a17_perf_interface//./\\.}[[:space:]]*$" "${a17_perf_rc}";then
+            sed -i "/^[[:space:]]*group root readproc oem_2907[[:space:]]*$/a\\    interface ${a17_perf_interface}" "${a17_perf_rc}"
+        fi
+        if ! grep -Fqx "    interface ${a17_perf_interface}" "${a17_perf_rc}";then
+            error "Qualcomm perf HAL interface 追加失敗" \
+                "Failed to add the Qualcomm perf HAL interface stanza"
+            exit 1
+        fi
+    else
+        error "Qualcomm perf HAL rc がありません" \
+            "Qualcomm perf HAL rc is missing"
+        exit 1
+    fi
+
+    # SELinux file contexts: the generated vendor config is consumed by
+    # mkfs.erofs, while the runtime copy is used by restorecon/servicemanager.
+    a17_vendor_contexts="build/portrom/images/config/vendor_file_contexts"
+    a17_vendor_runtime_contexts="build/portrom/images/vendor/etc/selinux/vendor_file_contexts"
+    if [[ ! -f "${a17_vendor_contexts}" ]];then
+        error "缺少 vendor_file_contexts，无法修复 Android 17 SELinux 标签" \
+            "vendor_file_contexts is missing; cannot fix Android 17 SELinux labels"
+        exit 1
+    fi
+    if ! a17_patch_vendor_context_file "${a17_vendor_contexts}" \
+        "build/diagnostics/a17-compat/originals/vendor-file-contexts";then
+        error "修复 vendor_file_contexts 失败" "Failed to patch vendor_file_contexts"
+        exit 1
+    fi
+    if [[ -f "${a17_vendor_runtime_contexts}" ]];then
+        if ! a17_patch_vendor_context_file "${a17_vendor_runtime_contexts}" \
+            "build/diagnostics/a17-compat/originals/vendor-runtime-file-contexts";then
+            error "修复运行时 vendor_file_contexts 失败" \
+                "Failed to patch runtime vendor_file_contexts"
+            exit 1
+        fi
+    else
+        yellow "未找到运行时 vendor_file_contexts，跳过运行时标签补丁" \
+            "Runtime vendor_file_contexts is absent; skipping runtime label patch"
+    fi
 
     # qspm seccomp: add renameat2 after the existing renameat rule (or at end).
     qspm_policy="build/portrom/images/vendor/etc/seccomp_policy/qspm.policy"
@@ -2432,6 +2530,32 @@ for pname in ${super_list};do
         blue 以[$pack_type]文件系统打包[${pname}.img] "Packing [${pname}.img] with [$pack_type] filesystem"
         python3 bin/fspatch.py build/portrom/images/${pname} build/portrom/images/config/${pname}_fs_config
         python3 bin/contextpatch.py build/portrom/images/${pname} build/portrom/images/config/${pname}_file_contexts
+        # contextpatch.py rebuilds vendor_file_contexts from the extracted
+        # tree and drops recursive rules that do not correspond to a concrete
+        # file. Re-apply the Android 17 overlay and /dev/ion rules before the
+        # final filesystem image is created.
+        if [[ ${port_android_version} == 17 && ${pname} == "vendor" ]];then
+            if ! a17_patch_vendor_context_file \
+                "build/portrom/images/config/vendor_file_contexts" \
+                "build/diagnostics/a17-compat/originals/vendor-file-contexts";then
+                error "重打包前最终 vendor_file_contexts 校验失败" \
+                    "Final vendor_file_contexts validation failed before repack"
+                exit 1
+            fi
+            # The file above only controls labels stored on /vendor itself.
+            # ueventd and restorecon consume the runtime copy below for /dev
+            # nodes.  Re-apply this after all compatibility passes so a clean
+            # userdata boot labels /dev/ion as ion_device; otherwise the
+            # legacy keymaster HAL aborts while vold waits forever for
+            # metadata-encryption key creation.
+            if ! a17_patch_vendor_context_file \
+                "build/portrom/images/vendor/etc/selinux/vendor_file_contexts" \
+                "build/diagnostics/a17-compat/originals/vendor-runtime-file-contexts";then
+                error "重打包前运行时 vendor_file_contexts 校验失败" \
+                    "Final runtime vendor_file_contexts validation failed before repack"
+                exit 1
+            fi
+        fi
         #perl -pi -e 's/\\@/@/g' build/portrom/images/config/${pname}_file_contexts
         mkfs.erofs -zlz4hc,9 --mount-point ${pname} --fs-config-file build/portrom/images/config/${pname}_fs_config --file-contexts build/portrom/images/config/${pname}_file_contexts -T 1648635685 build/portrom/images/${pname}.img build/portrom/images/${pname}
         if [ -f "build/portrom/images/${pname}.img" ];then
