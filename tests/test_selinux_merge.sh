@@ -26,6 +26,48 @@ mkdir -p \
     "$port/vendor/etc/selinux" \
     "$port/odm/etc/selinux"
 
+# A donor property label that is absent from the base must retain all of its
+# property attributes.  Declaring only the type is compile-valid but causes
+# second-stage init to abort in __system_property_area_init().
+merge_base="$fixture/merge-base"
+merge_port="$fixture/merge-port"
+mkdir -p "$merge_base/etc/selinux" "$merge_port/etc/selinux" "$work_dir/tmp"
+cat > "$merge_base/etc/selinux/plat_pub_versioned.cil" <<'EOF'
+(type init)
+(typeattribute property_type)
+(typeattribute vendor_property_type)
+(typeattribute vendor_internal_property_type)
+EOF
+: > "$merge_base/etc/selinux/vendor_property_contexts"
+: > "$merge_base/etc/selinux/vendor_service_contexts"
+: > "$merge_base/etc/selinux/vendor_hwservice_contexts"
+cat > "$merge_base/etc/selinux/vendor_sepolicy.cil" <<'EOF'
+(type init)
+EOF
+cat > "$merge_port/etc/selinux/vendor_property_contexts" <<'EOF'
+vendor.test.feature u:object_r:vendor_test_feature_prop:s0 exact string
+EOF
+: > "$merge_port/etc/selinux/vendor_service_contexts"
+: > "$merge_port/etc/selinux/vendor_hwservice_contexts"
+cat > "$merge_port/etc/selinux/vendor_sepolicy.cil" <<'EOF'
+(type vendor_test_feature_prop)
+(roletype object_r vendor_test_feature_prop)
+(typeattributeset property_type (vendor_test_feature_prop))
+(typeattributeset vendor_property_type (vendor_test_feature_prop))
+(typeattributeset vendor_internal_property_type (vendor_test_feature_prop))
+(allow init vendor_test_feature_prop (file (create getattr map open read setattr write)))
+EOF
+
+port_vendor_dir="$merge_port"
+port_android_version=17
+merge_vendor_selinux_contexts "$merge_base/etc/selinux"
+grep -qx '(typeattributeset property_type (vendor_test_feature_prop))' \
+    "$merge_base/etc/selinux/vendor_sepolicy.cil"
+grep -qx '(typeattributeset vendor_property_type (vendor_test_feature_prop))' \
+    "$merge_base/etc/selinux/vendor_sepolicy.cil"
+grep -qx '(typeattributeset vendor_internal_property_type (vendor_test_feature_prop))' \
+    "$merge_base/etc/selinux/vendor_sepolicy.cil"
+
 printf '30.0\n' > "$port/vendor/etc/selinux/plat_sepolicy_vers.txt"
 printf 'base-platform\n' > "$base/system/system/etc/selinux/mapping/30.0.cil"
 printf 'base-compat\n' > "$base/system/system/etc/selinux/mapping/30.0.compat.cil"
@@ -86,6 +128,20 @@ PATH="$fake_bin:$PATH" SECILC_BIN="$fake_bin/secilc-modern" \
     validate_split_selinux_policy "$port"
 
 grep -qx compiled "$fixture/tmp/selinux-compile-check/sepolicy"
+
+# The runtime property-area gate must reject a label that is declared but not
+# classified as property_type, then pass after the attribute is restored.
+printf 'vendor.test u:object_r:vendor_test_prop:s0 exact string\n' \
+    > "$port/vendor/etc/selinux/vendor_property_contexts"
+printf '(type vendor_test_prop)\n' >> "$port/vendor/etc/selinux/vendor_sepolicy.cil"
+if validate_property_context_types "$port" 2>/dev/null; then
+    echo 'unclassified property type unexpectedly passed' >&2
+    exit 1
+fi
+printf '(typeattribute property_type)\n' >> "$port/vendor/etc/selinux/plat_pub_versioned.cil"
+printf '(typeattributeset property_type (vendor_test_prop))\n' \
+    >> "$port/vendor/etc/selinux/vendor_sepolicy.cil"
+validate_property_context_types "$port"
 
 # A missing platform mapping is fatal.
 rm -f "$port/system/system/etc/selinux/mapping/30.0.cil"

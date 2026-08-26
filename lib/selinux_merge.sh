@@ -117,6 +117,33 @@ _selinux_emit_type_cil() {
         echo "(typeattributeset hal_service_type (${t}))" >> "$out"
     fi
 
+    # Property backing files under /dev/__properties__ are created with the
+    # label named by *_property_contexts.  Merely declaring that label as a
+    # type lets secilc succeed, but bionic's __system_property_area_init()
+    # fails when the type is not in property_type.  Preserve every property
+    # classification carried by the donor (property_type itself plus the
+    # system/vendor public/internal/restricted sub-attributes).  This is also
+    # important for the neverallow and ownership semantics of those labels.
+    local attr
+    while IFS= read -r attr; do
+        [[ -n "$attr" ]] || continue
+        _selinux_type_known "$attr" "$base_seldir" || continue
+        echo "(typeattributeset ${attr} (${t}))" >> "$out"
+    done < <(
+        awk -v wanted="$t" '
+            $1 == "(typeattributeset" && $2 ~ /property_type$/ {
+                for (i = 3; i <= NF; i++) {
+                    member = $i
+                    gsub(/[()]/, "", member)
+                    if (member == wanted) {
+                        print $2
+                        break
+                    }
+                }
+            }
+        ' "$port_cil" 2>/dev/null | sort -u
+    )
+
     local rule subj
     while IFS= read -r rule; do
         subj=$(echo "$rule" | sed -n 's/^(allow \([A-Za-z0-9_]*\) .*/\1/p')
@@ -132,11 +159,113 @@ _selinux_emit_type_cil() {
     return 0
 }
 
+# Verify the runtime invariant that secilc alone cannot check: every SELinux
+# label referenced by a property-context file must be a member of
+# property_type.  Otherwise init loads policy successfully and then aborts in
+# PropertyInit() while creating /dev/__properties__ backing files.
+validate_property_context_types() {
+    local port_root="${1:-build/portrom/images}"
+    local tmp_dir="${work_dir:-.}/tmp/property-context-check"
+    local members="${tmp_dir}/property_type.members"
+    local referenced="${tmp_dir}/property_contexts.referenced"
+    local missing="${tmp_dir}/property_type.missing"
+    mkdir -p "$tmp_dir"
+
+    local -a cil_files=(
+        "${port_root}/system/system/etc/selinux/plat_sepolicy.cil"
+        "${port_root}/system_ext/etc/selinux/system_ext_sepolicy.cil"
+        "${port_root}/product/etc/selinux/product_sepolicy.cil"
+        "${port_root}/vendor/etc/selinux/plat_pub_versioned.cil"
+        "${port_root}/vendor/etc/selinux/vendor_sepolicy.cil"
+        "${port_root}/odm/etc/selinux/odm_sepolicy.cil"
+    )
+    local mapping_dir candidate
+    for mapping_dir in \
+        "${port_root}/system/system/etc/selinux/mapping" \
+        "${port_root}/system_ext/etc/selinux/mapping" \
+        "${port_root}/product/etc/selinux/mapping"; do
+        for candidate in "$mapping_dir"/*.cil; do
+            [[ -s "$candidate" ]] && cil_files+=("$candidate")
+        done
+    done
+    local -a context_files=(
+        "${port_root}/system/system/etc/selinux/plat_property_contexts"
+        "${port_root}/system_ext/etc/selinux/system_ext_property_contexts"
+        "${port_root}/product/etc/selinux/product_property_contexts"
+        "${port_root}/vendor/etc/selinux/vendor_property_contexts"
+        "${port_root}/odm/etc/selinux/odm_property_contexts"
+    )
+
+    local -a existing_cil_files=() existing_context_files=()
+    for candidate in "${cil_files[@]}"; do
+        [[ -s "$candidate" ]] && existing_cil_files+=("$candidate")
+    done
+    for candidate in "${context_files[@]}"; do
+        [[ -s "$candidate" ]] && existing_context_files+=("$candidate")
+    done
+
+    : > "$members"
+    if (( ${#existing_cil_files[@]} > 0 )); then
+        awk '
+            $1 == "(typeattributeset" {
+                attribute = $2
+                for (i = 3; i <= NF; i++) {
+                    member = $i
+                    gsub(/[()]/, "", member)
+                    if (member ~ /^[A-Za-z0-9_-]+$/ &&
+                        member != "and" && member != "not" &&
+                        member != "or" && member != "all") {
+                        edges[attribute SUBSEP member] = 1
+                    }
+                }
+            }
+            END {
+                seen["property_type"] = 1
+                queue[1] = "property_type"
+                head = 1
+                tail = 1
+                while (head <= tail) {
+                    current = queue[head++]
+                    for (edge in edges) {
+                        split(edge, fields, SUBSEP)
+                        if (fields[1] == current && !seen[fields[2]]) {
+                            seen[fields[2]] = 1
+                            queue[++tail] = fields[2]
+                        }
+                    }
+                }
+                for (member in seen) {
+                    if (member != "property_type") print member
+                }
+            }
+        ' "${existing_cil_files[@]}" | sort -u > "$members"
+    fi
+
+    : > "$referenced"
+    if (( ${#existing_context_files[@]} > 0 )); then
+        awk '
+            $2 ~ /^u:object_r:[A-Za-z0-9_-]+:s0$/ {
+                split($2, fields, ":")
+                print fields[3]
+            }
+        ' "${existing_context_files[@]}" | sort -u > "$referenced"
+    fi
+
+    comm -23 "$referenced" "$members" > "$missing"
+    if [[ -s "$missing" ]]; then
+        error "property contexts引用type缺少property_type属性:" \
+              "Property-context types are missing the property_type attribute:"
+        sed -n '1,120p' "$missing" >&2
+        return 1
+    fi
+    return 0
+}
+
 # Merge vendor_service_contexts / vendor_property_contexts /
 # vendor_hwservice_contexts from the port ROM into the (base-derived) vendor
 # that ships on the device, declaring any missing types along the way.
 merge_vendor_selinux_contexts() {
-    local base_seldir="build/portrom/images/vendor/etc/selinux"
+    local base_seldir="${1:-build/portrom/images/vendor/etc/selinux}"
     local port_seldir="${port_vendor_dir}/etc/selinux"
 
     if [[ -z "$port_vendor_dir" ]] || [[ ! -d "$port_seldir" ]]; then
@@ -413,6 +542,8 @@ validate_split_selinux_policy() {
               "Invalid vendor SELinux version: ${version}"
         return 1
     }
+
+    validate_property_context_types "$port_root" || return 1
 
     local plat="${port_root}/system/system/etc/selinux/plat_sepolicy.cil"
     local mapping_dir="${port_root}/system/system/etc/selinux/mapping"
