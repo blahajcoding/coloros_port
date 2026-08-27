@@ -760,13 +760,68 @@ framework_target="build/portrom/images/system/system/framework/framework.jar"
 framework_cache="build/${app_patch_folder}/patched/framework.jar"
 if install_cached_dex_patch "$framework_cache" "$framework_target";then
     blue "复制已经处理过的framework.jar"
+    # The donor sidecar contains a Merkle tree for the unmodified jar. It is
+    # invalid as soon as framework.jar changes and must not be shipped beside
+    # the patched file.
+    rm -f "${framework_target}.fsv_meta"
 else
     cp -f "$framework_target" tmp/framework.jar
     if [[ -f devices/common/0001-core-framework-Introduce-OplusPropsHookUtils-V6.patch ]]; then
-        if ! java -jar bin/apktool/APKEditor.jar d -f -i tmp/framework.jar -o tmp/framework -no-dex-debug;then
-            error "framework.jar 反编译失败" "Failed to decompile framework.jar"
+        mapfile -t framework_dex_selectors < <(
+            python3 bin/dex_archive.py selectors tmp/framework.jar
+        )
+        if [[ ${#framework_dex_selectors[@]} -eq 0 ]];then
+            error "framework.jar 不含可读取的DEX" \
+                  "framework.jar contains no readable DEX files"
             exit 1
         fi
+
+        framework_has_dex041_container=false
+        while IFS= read -r framework_dex_version;do
+            if [[ $((10#$framework_dex_version)) -ge 41 ]];then
+                framework_has_dex041_container=true
+                break
+            fi
+        done < <(python3 bin/dex_archive.py versions tmp/framework.jar)
+
+        rm -rf tmp/framework tmp/framework-dex
+        mkdir -p tmp/framework/smali tmp/framework-dex
+        if [[ ${framework_has_dex041_container} == true ]];then
+            # DEX 041 can store several logical DEX files inside the one
+            # physical classes.dex ZIP entry. APKEditor/smali otherwise
+            # rebuilds only the first logical file, which removed
+            # android.os.MessageQueue and made zygote abort on Android 17.
+            # baksmali understands selectors such as classes.dex/2, so
+            # disassemble every logical file and later emit conventional
+            # classes.dex, classes2.dex, ... entries containing the same
+            # complete class set.
+            blue "展开 Android 17 DEX 041 framework容器 (${#framework_dex_selectors[@]} DEX)" \
+                "Expanding Android 17 DEX 041 framework container (${#framework_dex_selectors[@]} DEX files)"
+            framework_dex_index=0
+            for framework_selector in "${framework_dex_selectors[@]}";do
+                framework_dex_index=$((framework_dex_index + 1))
+                if [[ $framework_dex_index -eq 1 ]];then
+                    framework_smali_name=classes
+                else
+                    framework_smali_name="classes${framework_dex_index}"
+                fi
+                if ! java -jar bin/apktool/baksmali-3.0.5.jar disassemble \
+                    --api 35 --debug-info false -j 6 \
+                    "tmp/framework.jar/${framework_selector}" \
+                    -o "tmp/framework/smali/${framework_smali_name}";then
+                    error "DEX 041逻辑DEX反编译失败: ${framework_selector}" \
+                          "Failed to disassemble logical DEX 041 entry: ${framework_selector}"
+                    exit 1
+                fi
+            done
+        else
+            if ! java -jar bin/apktool/APKEditor.jar d -f -i tmp/framework.jar \
+                -o tmp/framework -no-dex-debug;then
+                error "framework.jar 反编译失败" "Failed to decompile framework.jar"
+                exit 1
+            fi
+        fi
+
         instrumentation=$(find tmp/framework -type f \
             -path '*/android/app/Instrumentation.smali' -print -quit)
         if [[ ! -f "$instrumentation" ]];then
@@ -775,13 +830,21 @@ else
             exit 1
         fi
         instrumentation_rel=${instrumentation#tmp/framework/}
+        if [[ ${framework_has_dex041_container} == true ]];then
+            framework_hook_dex_index=$((${#framework_dex_selectors[@]} + 1))
+            framework_hook_rel="smali/classes${framework_hook_dex_index}/com/android/internal/util/oplus/OplusPropsHookUtils.smali"
+        else
+            framework_hook_rel="smali/classes5/com/android/internal/util/oplus/OplusPropsHookUtils.smali"
+        fi
         pushd tmp/framework >/dev/null || exit 1
         [[ -d .git ]] && rm -rf .git
         git init -q
         git config user.name "patchuser"
         git config user.email "patchuser@example.com"
         echo "🔧 应用 patch 文件 0001-core-framework-Introduce-OplusPropsHookUtils-V6.patch ..."
-        if ! sed "s|smali/classes/android/app/Instrumentation.smali|${instrumentation_rel}|g" \
+        if ! sed \
+            -e "s|smali/classes/android/app/Instrumentation.smali|${instrumentation_rel}|g" \
+            -e "s|smali/classes5/com/android/internal/util/oplus/OplusPropsHookUtils.smali|${framework_hook_rel}|g" \
             "${work_dir}/devices/common/0001-core-framework-Introduce-OplusPropsHookUtils-V6.patch" |
             git apply -;then
             error "framework.jar 补丁应用失败" "Failed to apply framework.jar patch"
@@ -790,16 +853,92 @@ else
         fi
         popd >/dev/null || exit 1
         if ! grep -q 'OplusPropsHookUtils;->setProps' "$instrumentation" ||
-           [[ ! -f tmp/framework/smali/classes5/com/android/internal/util/oplus/OplusPropsHookUtils.smali ]];then
+           [[ ! -f "tmp/framework/${framework_hook_rel}" ]];then
             error "framework.jar 补丁内容不完整" "framework.jar patch is incomplete"
             exit 1
         fi
-        if ! java -jar bin/apktool/APKEditor.jar b -f -i tmp/framework -o "$framework_cache";then
+
+        if [[ ${framework_has_dex041_container} == true ]];then
+            framework_original_classes="tmp/framework-dex/original.classes"
+            framework_patched_classes="tmp/framework-dex/patched.classes"
+            framework_patched_without_hook="tmp/framework-dex/patched-without-hook.classes"
+            : > "$framework_original_classes"
+            for framework_selector in "${framework_dex_selectors[@]}";do
+                java -jar bin/apktool/baksmali-3.0.5.jar list classes \
+                    "tmp/framework.jar/${framework_selector}" >> "$framework_original_classes" || exit 1
+            done
+            LC_ALL=C sort -u -o "$framework_original_classes" "$framework_original_classes"
+
+            framework_rebuilt_dex=()
+            framework_dex_count=$((${#framework_dex_selectors[@]} + 1))
+            for ((framework_dex_index=1; framework_dex_index<=framework_dex_count; framework_dex_index++));do
+                if [[ $framework_dex_index -eq 1 ]];then
+                    framework_smali_name=classes
+                    framework_dex_name=classes.dex
+                else
+                    framework_smali_name="classes${framework_dex_index}"
+                    framework_dex_name="classes${framework_dex_index}.dex"
+                fi
+                framework_dex_output="tmp/framework-dex/${framework_dex_name}"
+                # smali 3.0.5 writes an invalid 0x70-byte header when asked
+                # for API 35/DEX 041. DEX 040 changes no bytecode semantics
+                # needed here and is accepted by Android 17 ART.
+                if ! java -jar bin/apktool/smali-3.0.5.jar assemble \
+                    --api 34 -j 6 "tmp/framework/smali/${framework_smali_name}" \
+                    -o "$framework_dex_output";then
+                    error "framework.jar DEX重编译失败: ${framework_dex_name}" \
+                          "Failed to rebuild framework.jar DEX: ${framework_dex_name}"
+                    exit 1
+                fi
+                framework_rebuilt_dex+=("$framework_dex_output")
+            done
+
+            if ! python3 bin/dex_archive.py repack tmp/framework.jar \
+                tmp/framework-dex/framework.unaligned.jar \
+                "${framework_rebuilt_dex[@]}";then
+                error "DEX 041 framework.jar重打包失败" \
+                      "Failed to repack the DEX 041 framework.jar"
+                exit 1
+            fi
+            if ! zipalign -f -p 4 tmp/framework-dex/framework.unaligned.jar \
+                "$framework_cache";then
+                error "framework.jar zipalign失败" "Failed to zipalign framework.jar"
+                exit 1
+            fi
+
+            : > "$framework_patched_classes"
+            while IFS= read -r framework_selector;do
+                java -jar bin/apktool/baksmali-3.0.5.jar list classes \
+                    "$framework_cache/${framework_selector}" >> "$framework_patched_classes" || exit 1
+            done < <(python3 bin/dex_archive.py selectors "$framework_cache")
+            LC_ALL=C sort -u -o "$framework_patched_classes" "$framework_patched_classes"
+            grep -Fvx 'Lcom/android/internal/util/oplus/OplusPropsHookUtils;' \
+                "$framework_patched_classes" > "$framework_patched_without_hook"
+            if ! cmp -s "$framework_original_classes" "$framework_patched_without_hook" ||
+               [[ $(grep -Fxc 'Lcom/android/internal/util/oplus/OplusPropsHookUtils;' \
+                    "$framework_patched_classes") -ne 1 ]];then
+                error "framework.jar重建后类集合不一致" \
+                      "framework.jar class set changed during DEX 041 rebuild"
+                exit 1
+            fi
+            for framework_required_class in \
+                'Landroid/app/Instrumentation;' \
+                'Landroid/os/MessageQueue;' \
+                'Lcom/android/internal/util/oplus/OplusPropsHookUtils;';do
+                if ! grep -Fqx "$framework_required_class" "$framework_patched_classes";then
+                    error "framework.jar缺少关键类: ${framework_required_class}" \
+                          "framework.jar is missing a critical class: ${framework_required_class}"
+                    exit 1
+                fi
+            done
+        elif ! java -jar bin/apktool/APKEditor.jar b -f -i tmp/framework \
+            -o "$framework_cache";then
             error "framework.jar 重编译失败" "Failed to rebuild framework.jar"
             exit 1
         fi
         validate_dex_archive "$framework_cache" tmp/framework.jar 1048576 || exit 1
         cp -fv "$framework_cache" "$framework_target"
+        rm -f "${framework_target}.fsv_meta"
     else
         echo "⚠️ 0001-core-framework-Introduce-OplusPropsHookUtils-V6.patch不存在，跳过补丁应用"
     fi

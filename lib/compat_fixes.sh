@@ -209,42 +209,19 @@ validate_dex_archive() {
     local reference="${2:-}"
     local minimum_bytes="${3:-1024}"
 
-    if [[ ! -f "$archive" ]] || ! unzip -tq "$archive" >/dev/null 2>&1; then
+    local dex_tool="${work_dir:-}"
+    if [[ -n "$dex_tool" ]]; then
+        dex_tool="${dex_tool}/bin/dex_archive.py"
+    else
+        dex_tool=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)
+        dex_tool="${dex_tool}/bin/dex_archive.py"
+    fi
+
+    if [[ ! -f "$archive" ]] ||
+       ! python3 "$dex_tool" validate "$archive" >/dev/null 2>&1; then
         error "DEX archive 无效: ${archive}" "Invalid DEX archive: ${archive}"
         return 1
     fi
-
-    local -a dex_entries=()
-    mapfile -t dex_entries < <(
-        unzip -Z1 "$archive" 2>/dev/null |
-            awk '/(^|\/)classes([0-9]+)?\.dex$/ { print }'
-    )
-    if [[ ${#dex_entries[@]} -eq 0 ]]; then
-        error "DEX archive 不含 classes*.dex: ${archive}" \
-              "DEX archive has no classes*.dex: ${archive}"
-        return 1
-    fi
-
-    local dex_entry magic
-    for dex_entry in "${dex_entries[@]}"; do
-        magic=$(
-            unzip -p "$archive" "$dex_entry" 2>/dev/null |
-                dd bs=1 count=8 status=none 2>/dev/null |
-                od -An -tx1 |
-                tr -d ' \n'
-        )
-        case "$magic" in
-            6465780a30333500|6465780a30333600|6465780a30333700|\
-            6465780a30333800|6465780a30333900|6465780a30343000|\
-            6465780a30343100|6465780a30343200)
-                ;;
-            *)
-                error "DEX magic 无效: ${archive}:${dex_entry}" \
-                      "Invalid DEX magic: ${archive}:${dex_entry}"
-                return 1
-                ;;
-        esac
-    done
 
     local archive_bytes reference_bytes
     archive_bytes=$(dex_archive_total_bytes "$archive")
@@ -320,10 +297,13 @@ validate_critical_port_artifacts() {
     else
         local framework_res systemui_cert framework_cert
         framework_res="build/portrom/images/system/system/framework/framework-res.apk"
+        # Build Tools 37 labels Android 17 hybrid-signature output as
+        # "V3.0 Signer" instead of "Signer #1".  Match the stable part of
+        # the field so this also works with older apksigner releases.
         systemui_cert=$(apksigner verify --print-certs "$systemui" 2>/dev/null |
-            awk -F': ' '/Signer #1 certificate SHA-256 digest:/{print $2; exit}')
+            awk -F': ' '/certificate SHA-256 digest:/{print $2; exit}')
         framework_cert=$(apksigner verify --print-certs "$framework_res" 2>/dev/null |
-            awk -F': ' '/Signer #1 certificate SHA-256 digest:/{print $2; exit}')
+            awk -F': ' '/certificate SHA-256 digest:/{print $2; exit}')
         if [[ -z "$framework_cert" || "$systemui_cert" != "$framework_cert" ]]; then
             error "SystemUI 与 framework-res 的签名证书不一致" \
                   "SystemUI signer does not match framework-res"
@@ -539,6 +519,7 @@ prepare_patch_cache() {
             port.sh \
             functions.sh \
             bin/apktool/APKEditor.jar \
+            bin/dex_archive.py \
             bin/patchmethod.py \
             bin/patchmethod_v2.py \
             bin/clear_testonly.py \
