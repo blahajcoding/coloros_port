@@ -979,6 +979,69 @@ get_oplusrom_version() {
     echo "$max_version"
 }
 
+android_platform_version_from_prop() {
+    local prop_file value
+    local effective_version=0
+    local fallback_version=""
+
+    # Android previews keep ro.build.version.release at the previous stable
+    # release. For example the Android 17 CinnamonBun preview reports
+    # release=16 and release_or_codename=17. Compatibility decisions must use
+    # the effective platform version, not the compatibility release string.
+    # Oplus preview payloads can split these properties across system and
+    # my_manifest, so inspect every supplied build.prop and select the highest
+    # numeric platform value.
+    for prop_file in "$@";do
+        [[ -f "$prop_file" ]] || continue
+        value=$(grep -m1 '^ro.build.version.release=' "$prop_file" 2>/dev/null |
+            cut -d= -f2 | tr -d '\r')
+        [[ -n "$value" ]] && fallback_version="$value"
+        if [[ "$value" =~ ^[0-9]+$ ]] &&
+           ((10#$value > effective_version));then
+            effective_version=$((10#$value))
+        fi
+        value=$(
+            grep -m1 '^ro.build.version.release_or_codename=' "$prop_file" 2>/dev/null |
+                cut -d= -f2 | tr -d '\r'
+        )
+        if [[ "$value" =~ ^[0-9]+$ ]] &&
+           ((10#$value > effective_version));then
+            effective_version=$((10#$value))
+        fi
+    done
+
+    if ((effective_version > 0));then
+        printf '%s\n' "$effective_version"
+    else
+        printf '%s\n' "$fallback_version"
+    fi
+}
+
+canonical_oplusrom_version() {
+    local version="${1#V}"
+    local major minor patch
+    IFS=. read -r major minor patch _ <<< "$version"
+    [[ "$major" =~ ^[0-9]+$ ]] || return 1
+    [[ "${minor:-0}" =~ ^[0-9]+$ ]] || return 1
+    [[ "${patch:-0}" =~ ^[0-9]+$ ]] || return 1
+    printf '%s.%s.%s\n' "$major" "${minor:-0}" "${patch:-0}"
+}
+
+set_prop_value() {
+    local prop_file="$1"
+    local key="$2"
+    local value="$3"
+    local escaped_key escaped_value
+
+    escaped_key=$(printf '%s' "$key" | sed 's/[][\.^$*+?{}()|/]/\\&/g')
+    escaped_value=$(printf '%s' "$value" | sed 's/[\\&|]/\\&/g')
+    if grep -q "^${escaped_key}=" "$prop_file";then
+        sed -i "s|^${escaped_key}=.*|${key}=${escaped_value}|" "$prop_file"
+    else
+        printf '%s=%s\n' "$key" "$value" >> "$prop_file"
+    fi
+}
+
 trap 'error "强制中断脚本运行，以免误删重要文件！" "Script interrupted! Exiting to prevent accidental deletion." ; exit 1' SIGINT
 
 

@@ -398,6 +398,46 @@ validate_critical_port_artifacts() {
         done
     fi
 
+    if [[ ${port_android_version:-0} -ge 17 ]];then
+        local nfc_apk wificond_rc oiface qape_lib snapdragon_v1_lib
+        local qcc_rc qcc_protobuf
+        nfc_apk="build/portrom/images/system/system/priv-app/NfcNci/NfcNci.apk"
+        wificond_rc="build/portrom/images/system/system/etc/init/wificond.rc"
+        oiface="build/portrom/images/system_ext/bin/oiface"
+        qape_lib="build/portrom/images/system_ext/lib64/vendor.qti.snapdragonServices.qape-V1-ndk.so"
+        snapdragon_v1_lib="build/portrom/images/system_ext/lib64/vendor.qti.snapdragonServices-V1-ndk.so"
+        qcc_rc="build/portrom/images/system_ext/etc/init/vendor.qti.hardware.qccsyshal@1.2-service.rc"
+        qcc_protobuf="build/portrom/images/system_ext/lib64/libprotobuf-cpp-full-5.26.1.so"
+
+        if [[ ! -f "$nfc_apk" ]] ||
+           ! apksigner verify "$nfc_apk" >/dev/null 2>&1;then
+            error "Android 17 NFC APK缺失或签名无效" \
+                  "Android 17 NFC APK is missing or has an invalid signature"
+            failed=1
+        fi
+        if [[ ! -f "$wificond_rc" ]] ||
+           ! grep -Fqx 'service wificond /system/bin/wificond' "$wificond_rc";then
+            error "Android 17缺少wificond init服务" \
+                  "Android 17 wificond init service is missing"
+            failed=1
+        fi
+        if [[ -x "$oiface" ]] &&
+           readelf -d "$oiface" 2>/dev/null |
+               grep -qF '[vendor.qti.snapdragonServices.qape-V1-ndk.so]' &&
+           { [[ ! -f "$qape_lib" ]] || [[ ! -f "$snapdragon_v1_lib" ]]; };then
+            error "Android 17 OIface Qualcomm AIDL依赖缺失" \
+                  "Android 17 OIface Qualcomm AIDL dependencies are missing"
+            failed=1
+        fi
+        if [[ -f "$qcc_rc" && ! -f "$qcc_protobuf" ]] &&
+           ! sed -n '/^service qccsyshal@1\.2-service /,/^[^[:space:]]/p' \
+               "$qcc_rc" | grep -Eq '^[[:space:]]+disabled[[:space:]]*$';then
+            error "缺少protobuf 5.26.1的QCC HIDL服务仍被启用" \
+                  "QCC HIDL remains enabled without protobuf 5.26.1"
+            failed=1
+        fi
+    fi
+
     local xml
     for xml in \
         build/portrom/images/my_product/etc/permissions/oplus.product.display_features.xml \

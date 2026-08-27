@@ -452,8 +452,12 @@ rm -rf config
 blue "正在获取ROM参数" "Fetching ROM build prop."
 
 # 安卓版本
-base_android_version=$(< build/baserom/images/system/system/build.prop grep "ro.build.version.release" |awk 'NR==1' |cut -d '=' -f 2)
-port_android_version=$(< build/portrom/images/system/system/build.prop grep "ro.build.version.release" |awk 'NR==1' |cut -d '=' -f 2)
+base_android_version=$(android_platform_version_from_prop \
+    build/baserom/images/system/system/build.prop \
+    build/baserom/images/my_manifest/build.prop)
+port_android_version=$(android_platform_version_from_prop \
+    build/portrom/images/system/system/build.prop \
+    build/portrom/images/my_manifest/build.prop)
 green "安卓版本: 底包为[Android ${base_android_version}], 移植包为 [Android ${port_android_version}]" "Android Version: BASEROM:[Android ${base_android_version}], PORTROM [Android ${port_android_version}]"
 
 # SDK版本
@@ -551,6 +555,14 @@ portIsRealmeUI=false
 port_oplusrom_version=$(get_oplusrom_version)
 port_oplusrom_confidential_version=$(< build/portrom/images/my_manifest/build.prop grep "ro.build.version.oplusrom.confidential" |awk 'NR==1' |cut -d '=' -f 2)
 
+if ! port_oplusrom_version_full=$(canonical_oplusrom_version "$port_oplusrom_version");then
+    error "无法解析ColorOS版本: ${port_oplusrom_version}" \
+          "Unable to parse ColorOS version: ${port_oplusrom_version}"
+    exit 1
+fi
+IFS=. read -r port_oplusrom_major port_oplusrom_minor _ <<< \
+    "$port_oplusrom_version_full"
+port_oplusrom_display="${port_oplusrom_major}.${port_oplusrom_minor}"
 
 if [[ "$port_brand" == "realme" ]];then
     portIsRealmeUI=true
@@ -595,6 +607,22 @@ if  ! grep -q  "ro.build.display.id.show" build/portrom/images/my_manifest/build
     echo "ro.build.display.id.show=$target_display_id_show" >> build/portrom/images/my_manifest/build.prop
 else
     sed -i "s/ro.build.display.id.show=.*/ro.build.display.id.show=${target_display_id_show}/g" build/portrom/images/my_manifest/build.prop
+fi
+if [[ $port_android_version -ge 17 ]];then
+    # Early Android 17/ColorOS 17 donors can carry preview placeholders in
+    # my_manifest (16.0/V16.0.0) while my_product already has the final
+    # ColorOS major version. Keep all three public properties consistent with
+    # the highest donor value and update the Settings display ID as well.
+    target_display_id_show=$(printf '%s' "$target_display_id_show" |
+        sed -E "s/_([0-9]+)\./_${port_oplusrom_major}./")
+    set_prop_value build/portrom/images/my_manifest/build.prop \
+        ro.build.display.id.show "$target_display_id_show"
+    set_prop_value build/portrom/images/my_manifest/build.prop \
+        ro.build.version.oplusrom "V${port_oplusrom_version_full}"
+    set_prop_value build/portrom/images/my_manifest/build.prop \
+        ro.build.version.oplusrom.display "$port_oplusrom_display"
+    set_prop_value build/portrom/images/my_manifest/build.prop \
+        ro.build.version.oplusrom.confidential "V${port_oplusrom_version_full}"
 fi
 sed -i '/ro.build.version.release=/d' build/portrom/images/my_manifest/build.prop
 sed -i "s/ro.vendor.oplus.market.name=.*/ro.vendor.oplus.market.name=${base_market_name}/g" build/portrom/images/my_manifest/build.prop
@@ -1619,7 +1647,6 @@ cp -rf build/baserom/images/my_product/etc/fusionlight_profile/*  build/portrom/
 
 sed -i "/persist.vendor.display.pxlw.iris_feature=.*/d" build/portrom/images/my_product/etc/bruce/build.prop
 
-
 propfile="build/portrom/images/my_product/etc/bruce/build.prop"
 
 if [[ $portIsColorOSGlobal == true ]]; then
@@ -2240,16 +2267,22 @@ fi
 if [[ ${port_android_version} -ge 16 ]] && [[ ${base_android_version} -lt 15 ]];then
     rm -rf build/portrom/images/system_ext/priv-app/com.qualcomm.location
     #remove_feature "oplus.software.display.dcbacklight_support" force
-    if [[ -f  devices/common/nfc_fix_a16_v2.zip ]];then
-    rm -rf build/portrom/images/system/system/priv-app/NfcNci/*
-    unzip -o devices/common/nfc_fix_a16_v2.zip -d ${work_dir}/build/portrom/images/
-    fi
-    if [[ $regionmark == "CN" ]];then
-    unzip -o devices/common/wifi_fix_a16.zip -d ${work_dir}/build/portrom/images/
-    rm -rf build/portrom/images/system/system/apex/com.google.android.wifi*.apex
-    fi
-    if [[ ${port_oplusrom_version} == "16.0.1" ]] && [[ $regionmark != "CN" ]] ;then
-        unzip -o devices/common/oos_1601_fix.zip -d build/portrom/images/
+    if [[ ${port_android_version} == 16 ]];then
+        if [[ "$port_device_stack_compatible" != "true" ]] &&
+           [[ -f devices/common/nfc_fix_a16_v2.zip ]]; then
+            rm -rf build/portrom/images/system/system/priv-app/NfcNci/*
+            unzip -o devices/common/nfc_fix_a16_v2.zip -d \
+                "${work_dir}/build/portrom/images/"
+        fi
+        if [[ $regionmark == "CN" ]];then
+            unzip -o devices/common/wifi_fix_a16.zip -d \
+                "${work_dir}/build/portrom/images/"
+            rm -rf build/portrom/images/system/system/apex/com.google.android.wifi*.apex
+        fi
+        if [[ ${port_oplusrom_version} == "16.0.1" ]] &&
+           [[ $regionmark != "CN" ]];then
+            unzip -o devices/common/oos_1601_fix.zip -d build/portrom/images/
+        fi
     fi
 
     if [[ -f build/portrom/images/my_product/cust/CN/etc/power_profile/power_profile.xml ]];then
@@ -2278,6 +2311,90 @@ fi
 # 5. Label vendor overlays and /dev/ion for enforcing-mode Android 17 policy.
 if [[ ${port_android_version} == 17 ]];then
     blue "Android 17 兼容修复" "Android 17 compatibility fixes"
+
+    # Some ColorOS 17 preview payloads contain the wificond executable and
+    # policy but omit its init_rc. The framework then creates wlan0 through
+    # the vendor HAL but immediately tears it down because IWificond is absent.
+    # Restore the standard AOSP service definition.
+    if [[ -x build/portrom/images/system/system/bin/wificond ]];then
+        cp -f devices/common/wificond.rc \
+            build/portrom/images/system/system/etc/init/wificond.rc
+        chmod 0644 build/portrom/images/system/system/etc/init/wificond.rc
+    fi
+
+    # The A17 system_ext OIface binary is linked against two Qualcomm stable
+    # AIDL libraries supplied by the donor vendor. A legacy SM8350 vendor does
+    # not ship them, so preserve only these userspace ABI libraries while
+    # keeping the rest of the device-matched base vendor stack.
+    a17_oiface="build/portrom/images/system_ext/bin/oiface"
+    a17_qape_lib="build/portrom/images/system_ext/lib64/vendor.qti.snapdragonServices.qape-V1-ndk.so"
+    a17_snapdragon_v1_lib="build/portrom/images/system_ext/lib64/vendor.qti.snapdragonServices-V1-ndk.so"
+    if [[ -x "${a17_oiface}" ]] &&
+       readelf -d "${a17_oiface}" 2>/dev/null |
+           grep -qF '[vendor.qti.snapdragonServices.qape-V1-ndk.so]';then
+        a17_donor_vendor_img=""
+        for a17_vendor_candidate in \
+            "build/${version_name}/vendor.img" \
+            "build/${version_name2:-}/vendor.img";do
+            if [[ -f "${a17_vendor_candidate}" ]];then
+                a17_donor_vendor_img="${a17_vendor_candidate}"
+                break
+            fi
+        done
+        if [[ -n "${a17_donor_vendor_img}" ]];then
+            a17_donor_vendor_dir="tmp/a17-donor-vendor"
+            rm -rf "${a17_donor_vendor_dir}"
+            mkdir -p "${a17_donor_vendor_dir}"
+            if ! extract.erofs -x -i "${a17_donor_vendor_img}" \
+                -o "${a17_donor_vendor_dir}" >/dev/null 2>&1;then
+                error "无法提取A17 donor vendor兼容库" \
+                      "Failed to extract A17 donor vendor compatibility libraries"
+                exit 1
+            fi
+            a17_donor_qape=$(find "${a17_donor_vendor_dir}" -type f \
+                -name 'vendor.qti.snapdragonServices.qape-V1-ndk.so' -print -quit)
+            a17_donor_snapdragon_v2=$(find "${a17_donor_vendor_dir}" -type f \
+                -name 'vendor.qti.snapdragonServices-V2-ndk.so' -print -quit)
+            if [[ ! -f "${a17_donor_qape}" || ! -f "${a17_donor_snapdragon_v2}" ]];then
+                error "A17 donor vendor缺少OIface兼容库" \
+                      "A17 donor vendor is missing OIface compatibility libraries"
+                exit 1
+            fi
+            mkdir -p build/portrom/images/system_ext/lib64
+            cp -f "${a17_donor_qape}" "${a17_qape_lib}"
+            # The donor exposes revision 2 of the stable interface. It is a
+            # backward-compatible superset and was verified on-device with
+            # the A17 OIface client; install an additional V1 filename alias.
+            cp -f "${a17_donor_snapdragon_v2}" "${a17_snapdragon_v1_lib}"
+            chmod 0644 "${a17_qape_lib}" "${a17_snapdragon_v1_lib}"
+            rm -rf "${a17_donor_vendor_dir}"
+            green "已补齐A17 OIface Qualcomm AIDL库" \
+                  "Installed A17 OIface Qualcomm AIDL libraries"
+        elif [[ ! -f "${a17_qape_lib}" || ! -f "${a17_snapdragon_v1_lib}" ]];then
+            error "无法定位A17 donor vendor.img以修复OIface" \
+                  "Cannot locate the A17 donor vendor.img required for OIface"
+            exit 1
+        fi
+    fi
+
+    # The preview donor also starts the legacy QCC HIDL service even though it
+    # omits its exact protobuf 5.26.1 ABI. Neither protobuf 6 nor the base
+    # vendor protobuf is binary-compatible. The newer AIDL implementation is
+    # present, so prevent the unusable legacy daemon from crashing every five
+    # seconds and setting sys.init.updatable_crashing.
+    a17_qcc_rc="build/portrom/images/system_ext/etc/init/vendor.qti.hardware.qccsyshal@1.2-service.rc"
+    a17_qcc_protobuf="build/portrom/images/system_ext/lib64/libprotobuf-cpp-full-5.26.1.so"
+    if [[ -f "${a17_qcc_rc}" && ! -f "${a17_qcc_protobuf}" ]] &&
+       ! sed -n '/^service qccsyshal@1\.2-service /,/^[^[:space:]]/p' \
+           "${a17_qcc_rc}" | grep -Eq '^[[:space:]]+disabled[[:space:]]*$';then
+        sed -i '/^[[:space:]]*class hal[[:space:]]*$/a\    disabled' "${a17_qcc_rc}"
+        grep -A5 '^service qccsyshal@1\.2-service ' "${a17_qcc_rc}" |
+            grep -Eq '^[[:space:]]+disabled[[:space:]]*$' || {
+                error "无法禁用不兼容的QCC HIDL服务" \
+                      "Failed to disable the incompatible QCC HIDL service"
+                exit 1
+            }
+    fi
     mkdir -p build/diagnostics/a17-compat/originals
 
     # SELinux 30.0 mapping: only copy from trusted assets, never rename the
@@ -2435,17 +2552,65 @@ if [[ ${port_android_version} == 17 ]];then
             blue "OplusWifiResource.apk 已是兼容配置" "OplusWifiResource.apk already compatible"
         else
             a17_tmp=$(mktemp -d "${TMPDIR:-tmp}/a17-wifi.XXXXXX")
-            mkdir -p "${a17_tmp}/framework"
-            java -jar bin/apktool/apktool.jar if -p "${a17_tmp}/framework" "${framework_res}" || { error "安装 framework-res 失败" "Failed to install framework-res"; exit 1; }
-            java -jar bin/apktool/apktool.jar if -p "${a17_tmp}/framework" "${oplus_framework_res}" || { error "安装 oplus-framework-res 失败" "Failed to install oplus-framework-res"; exit 1; }
-            java -jar bin/apktool/apktool.jar d -f -p "${a17_tmp}/framework" -o "${a17_tmp}/OplusWifiResource" "${wifi_rro}" || { error "解码 OplusWifiResource 失败" "Failed to decode OplusWifiResource"; exit 1; }
+            # The legacy apktool bundled by the project cannot decode Android
+            # 17's resource table (Expected 0x00, got 0x08). APKEditor 1.4.9
+            # supports the current ARSC format and accepts both framework
+            # packages directly for decode and rebuild.
+            java -jar bin/apktool/APKEditor.jar d -f \
+                -i "${wifi_rro}" \
+                -o "${a17_tmp}/OplusWifiResource" \
+                -framework "${framework_res}" \
+                -framework "${oplus_framework_res}" || {
+                    error "解码 OplusWifiResource 失败" \
+                          "Failed to decode OplusWifiResource"
+                    exit 1
+                }
             bool_file=$(grep -R -l --include="bools.xml" "config_wifiChannelUtilizationOverrideEnabled" "${a17_tmp}/OplusWifiResource/res" 2>/dev/null | head -n 1)
+            if [[ -z "${bool_file}" ]];then
+                bool_file=$(grep -R -l --include="bools.xml" \
+                    "config_wifiChannelUtilizationOverrideEnabled" \
+                    "${a17_tmp}/OplusWifiResource/resources" 2>/dev/null |
+                    head -n 1)
+            fi
             [[ -n "${bool_file}" ]] || { error "RRO 中不存在 config_wifiChannelUtilizationOverrideEnabled" "RRO bool not found"; exit 1; }
             sed -E -i 's#(<bool[[:space:]]+name="config_wifiChannelUtilizationOverrideEnabled">)[^<]*(</bool>)#\1true\2#' "${bool_file}"
             grep -Eq '<bool[[:space:]]+name="config_wifiChannelUtilizationOverrideEnabled">true</bool>' "${bool_file}" || { error "写入 Wi-Fi 兼容值失败" "Failed to set Wi-Fi bool"; exit 1; }
-            java -jar bin/apktool/apktool.jar b -f -p "${a17_tmp}/framework" -o "${a17_tmp}/OplusWifiResource-unsigned.apk" "${a17_tmp}/OplusWifiResource" || { error "重编译 OplusWifiResource 失败" "Failed to rebuild OplusWifiResource"; exit 1; }
-            otatools/bin/apksigner sign --in "${a17_tmp}/OplusWifiResource-unsigned.apk" --out "${a17_tmp}/OplusWifiResource-signed.apk" --key key/testkey.pk8 --cert key/testkey.x509.pem --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true || { error "签名 OplusWifiResource 失败" "Failed to sign OplusWifiResource"; exit 1; }
+            java -jar bin/apktool/APKEditor.jar b -f \
+                -i "${a17_tmp}/OplusWifiResource" \
+                -o "${a17_tmp}/OplusWifiResource-unsigned.apk" \
+                -framework "${framework_res}" \
+                -framework "${oplus_framework_res}" || {
+                    error "重编译 OplusWifiResource 失败" \
+                          "Failed to rebuild OplusWifiResource"
+                    exit 1
+                }
+            zipalign -f -p 4 "${a17_tmp}/OplusWifiResource-unsigned.apk" \
+                "${a17_tmp}/OplusWifiResource-aligned.apk" || {
+                    error "OplusWifiResource zipalign失败" \
+                          "Failed to zipalign OplusWifiResource"
+                    exit 1
+                }
+            otatools/bin/apksigner sign \
+                --in "${a17_tmp}/OplusWifiResource-aligned.apk" \
+                --out "${a17_tmp}/OplusWifiResource-signed.apk" \
+                --key otatools/key/testkey.pk8 \
+                --cert otatools/key/testkey.x509.pem \
+                --v1-signing-enabled true \
+                --v2-signing-enabled true \
+                --v3-signing-enabled true \
+                --v4-signing-enabled false || {
+                    error "签名 OplusWifiResource 失败" \
+                          "Failed to sign OplusWifiResource"
+                    exit 1
+                }
             otatools/bin/apksigner verify --verbose "${a17_tmp}/OplusWifiResource-signed.apk" || { error "签名验证失败" "Signature verification failed"; exit 1; }
+            if ! otatools/bin/aapt2 dump resources \
+                "${a17_tmp}/OplusWifiResource-signed.apk" 2>/dev/null |
+                awk '/bool\/config_wifiChannelUtilizationOverrideEnabled/{seen=1;next} seen && /^[[:space:]]*resource /{exit} seen && /^[[:space:]]*\(\)[[:space:]]+true[[:space:]]*$/{found=1;exit} END{exit(found?0:1)}';then
+                error "重建后Wi-Fi RRO值未生效" \
+                      "Rebuilt Wi-Fi RRO does not contain the compatibility value"
+                exit 1
+            fi
             cp -p "${a17_tmp}/OplusWifiResource-signed.apk" "${wifi_rro}"
             green "OplusWifiResource.apk 修复并签名完成" "OplusWifiResource.apk rebuilt and signed"
             rm -rf "${a17_tmp}"
