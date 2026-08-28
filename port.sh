@@ -103,6 +103,12 @@ super_list=$(grep "possible_super_list" bin/port_config |cut -d '=' -f 2)
 repackext4=$(grep "repack_with_ext4" bin/port_config |cut -d '=' -f 2)
 super_extended=$(grep "super_extended" bin/port_config |cut -d '=' -f 2)
 pack_method=$(grep "pack_method" bin/port_config | cut -d '=' -f 2)
+verify_generated_ota=${PORT_VERIFY_GENERATED_OTA:-$(config_value verify_generated_ota false)}
+if [[ "$verify_generated_ota" != "true" && "$verify_generated_ota" != "false" ]]; then
+    error "verify_generated_ota 必须为 true 或 false" \
+          "verify_generated_ota must be true or false"
+    exit 1
+fi
 if [[ ${repackext4} == true ]]; then
     pack_type=EXT
 else
@@ -2322,6 +2328,23 @@ if [[ ${port_android_version} == 17 ]];then
         chmod 0644 build/portrom/images/system/system/etc/init/wificond.rc
     fi
 
+    # SecureElementResTarget enables ColorOS 17's vendor-stable OMAPI Binder
+    # endpoint. Keep the official A17 device-manifest placement in ODM.
+    # Do not declare the donor's hardware AIDL eSE/SIM HALs: this legacy device
+    # provides working HIDL 1.2 instances instead, and a declaration without
+    # the matching AIDL implementation would make SecureElement wait forever.
+    a17_se_vintf_source="devices/common/secure_element_omapi_service.xml"
+    a17_se_vintf_target="build/portrom/images/odm/etc/vintf/manifest/secure_element_omapi_service.xml"
+    if [[ ! -s "${a17_se_vintf_source}" ]] ||
+       ! xmlstarlet val "${a17_se_vintf_source}" >/dev/null 2>&1;then
+        error "Android 17 Secure Element OMAPI VINTF资源缺失或无效" \
+              "Android 17 Secure Element OMAPI VINTF asset is missing or invalid"
+        exit 1
+    fi
+    mkdir -p "$(dirname "${a17_se_vintf_target}")"
+    cp -f "${a17_se_vintf_source}" "${a17_se_vintf_target}"
+    chmod 0644 "${a17_se_vintf_target}"
+
     # The A17 system_ext OIface binary is linked against two Qualcomm stable
     # AIDL libraries supplied by the donor vendor. A legacy SM8350 vendor does
     # not ship them, so preserve only these userspace ABI libraries while
@@ -2687,6 +2710,12 @@ if [[ $portIsRealmeUI == true ]]; then
         add_module $module
     done
 fi
+
+apply_mediaserver_compat || exit 1
+apply_gui_extension_compat || exit 1
+apply_codec2_lazy_hal_fix || exit 1
+apply_android17_wifi_vendor_cmd_compat || exit 1
+dedupe_selinux_contexts || exit 1
 
 blue "Optimising system..."
 echo "ZWNobyAiSnVuaSB3YXMgaGVyZSIgPj4gYnVpbGQvcG9ydHJvbS9pbWFnZXMvc3lzdGVtX2V4dC9ldGMvanVuaXBlcg==" | base64 -d | bash
@@ -3087,27 +3116,32 @@ if [[ $pack_method == "stock" ]];then
         exit 1
     fi
     generated_ota="out/${base_product_device}-ota_full-${port_rom_version}-user-${port_android_version}.0.zip"
-    payload_verify_dir=$(mktemp -d "${work_dir}/tmp/payload-verify.XXXXXX")
-    if ! payload-dumper-go --partitions system,odm \
-        --output "${payload_verify_dir}" "${generated_ota}"; then
-        error "生成 OTA payload 无法提取" "Generated OTA payload could not be extracted."
-        rm -rf "${payload_verify_dir}"
-        exit 1
-    fi
-    for verify_part in system odm; do
-        expected_image="out/target/product/${base_product_device}/IMAGES/${verify_part}.img"
-        extracted_image="${payload_verify_dir}/${verify_part}.img"
-        if [[ ! -s "${extracted_image}" ]] ||
-           ! cmp -s "${expected_image}" "${extracted_image}"; then
-            error "生成 payload 分区数据不完整: ${verify_part}" \
-                  "Generated payload has incomplete partition data: ${verify_part}"
+    if [[ "${verify_generated_ota}" == "true" ]];then
+        payload_verify_dir=$(mktemp -d "${work_dir}/tmp/payload-verify.XXXXXX")
+        if ! payload-dumper-go --partitions system,odm \
+            --output "${payload_verify_dir}" "${generated_ota}"; then
+            error "生成 OTA payload 无法提取" "Generated OTA payload could not be extracted."
             rm -rf "${payload_verify_dir}"
             exit 1
         fi
-    done
-    rm -rf "${payload_verify_dir}"
-    green "OTA payload 分区回读验证通过" \
-          "OTA payload partition round-trip verification passed"
+        for verify_part in system odm; do
+            expected_image="out/target/product/${base_product_device}/IMAGES/${verify_part}.img"
+            extracted_image="${payload_verify_dir}/${verify_part}.img"
+            if [[ ! -s "${extracted_image}" ]] ||
+               ! cmp -s "${expected_image}" "${extracted_image}"; then
+                error "生成 payload 分区数据不完整: ${verify_part}" \
+                      "Generated payload has incomplete partition data: ${verify_part}"
+                rm -rf "${payload_verify_dir}"
+                exit 1
+            fi
+        done
+        rm -rf "${payload_verify_dir}"
+        green "OTA payload 分区回读验证通过" \
+              "OTA payload partition round-trip verification passed"
+    else
+        blue "跳过完成 OTA payload 回读验证（verify_generated_ota=false）" \
+             "Skipping completed-OTA payload round-trip verification (verify_generated_ota=false)"
+    fi
     ziphash=$(md5sum "${generated_ota}" |head -c 10)
     mv -f "${generated_ota}" out/$target_folder/ota_full-${rom_version}-${port_product_model}-${pack_timestamp}-$regionmark-${portrom_version_security_patch}-${ziphash}.zip
 	blue "打包完成： out/$target_folder/ota_full-${rom_version}-${port_product_model}-${pack_timestamp}-$regionmark-${portrom_version_security_patch}-${ziphash}.zip"

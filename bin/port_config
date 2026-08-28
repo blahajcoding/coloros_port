@@ -15,3 +15,11 @@ remove_data_encryption=false
 # Needed to manually extend super partition, in order to flash it successfully. 
 super_extended=false
 pack_method=stock
+
+# Re-extract and byte-compare system/odm from the completed OTA payload.
+# Disabled by default because this needs substantial temporary disk space/I/O.
+verify_generated_ota=false
+
+# OEM/platform-signed APKs must not be modified without the matching private
+# key. Enabling this can make SystemUI lose signature permissions.
+patch_protected_oem_apks=false

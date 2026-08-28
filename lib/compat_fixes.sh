@@ -161,6 +161,128 @@ apply_codec2_lazy_hal_fix() {
           "Fixed QTI Codec2 lazy-HAL init/VINTF pairing"
 }
 
+apply_android17_wifi_vendor_cmd_compat() {
+    [[ ${port_android_version:-0} -ge 17 ]] || return 0
+
+    local wifi_service="build/portrom/images/odm/bin/hw/vendor.oplus.hardware.wifi-aidl-service"
+    local vendor_cmd="build/portrom/images/vendor/etc/wifi/vendor_cmd.xml"
+    [[ -f "$wifi_service" ]] || return 0
+    strings "$wifi_service" 2>/dev/null |
+        grep -qF '/vendor/bin/vendor_cmd_tool' || return 0
+
+    if [[ ! -s "$vendor_cmd" ]]; then
+        error "Android 17 Oplus Wi-Fi服务需要的vendor_cmd.xml缺失" \
+              "vendor_cmd.xml required by the Android 17 Oplus Wi-Fi service is missing"
+        return 1
+    fi
+
+    mkdir -p "${work_dir}/tmp" build/diagnostics/a17-compat/originals
+    local additions output
+    additions=$(mktemp "${work_dir}/tmp/vendor-cmd-additions.XXXXXX") || return 1
+    output=$(mktemp "${work_dir}/tmp/vendor-cmd.XXXXXX") || {
+        rm -f "$additions"
+        return 1
+    }
+
+    # These are the Qualcomm SET_WIFI_CONFIGURATION IDs used by the official
+    # ColorOS 17 vendor_cmd.xml. The A17 Oplus Wi-Fi AIDL service sends all
+    # eight names when changing STA antenna mode. Android 14's XML stops at
+    # CONFIG_NSS, so the legacy helper dereferences a missing attribute and
+    # crashes in strtoul instead of returning the driver's result.
+    local name id name_count exact_count
+    while read -r name id; do
+        name_count=$(xmlstarlet sel -t -v \
+            "count(/WCN_VenTool/VendorCmd[@name='SET_WIFI_CONFIG']/Attribute[@name='${name}'])" \
+            "$vendor_cmd" 2>/dev/null) || name_count=0
+        exact_count=$(xmlstarlet sel -t -v \
+            "count(/WCN_VenTool/VendorCmd[@name='SET_WIFI_CONFIG']/Attribute[@name='${name}' and @ID='${id}' and @TYPE='u8'])" \
+            "$vendor_cmd" 2>/dev/null) || exact_count=0
+        if [[ "$name_count" == 0 ]]; then
+            printf '\t\t<Attribute name="%s" ID="%s" TYPE="u8"/>\n' \
+                "$name" "$id" >> "$additions"
+        elif [[ "$name_count" != 1 || "$exact_count" != 1 ]]; then
+            rm -f "$additions" "$output"
+            error "vendor_cmd.xml中的${name}定义错误或重复" \
+                  "vendor_cmd.xml has an invalid or duplicate ${name} definition"
+            return 1
+        fi
+    done <<'EOF'
+CONFIG_TX_NSS_2GHZ 110
+CONFIG_RX_NSS_2GHZ 111
+CONFIG_TX_NSS_5GHZ 112
+CONFIG_RX_NSS_5GHZ 113
+CONFIG_NUM_TX_CHAINS_2GHZ 114
+CONFIG_NUM_RX_CHAINS_2GHZ 115
+CONFIG_NUM_TX_CHAINS_5GHZ 116
+CONFIG_NUM_RX_CHAINS_5GHZ 117
+EOF
+
+    if [[ -s "$additions" ]]; then
+        local backup="build/diagnostics/a17-compat/originals/vendor_cmd.xml"
+        [[ -f "$backup" ]] || cp -p "$vendor_cmd" "$backup"
+        if ! awk -v additions_file="$additions" '
+            BEGIN {
+                while ((getline line < additions_file) > 0)
+                    additions = additions line ORS
+                close(additions_file)
+            }
+            /<VendorCmd[[:space:]][^>]*name="SET_WIFI_CONFIG"/ {
+                in_set_wifi = 1
+                found_set_wifi = 1
+            }
+            in_set_wifi && /<\/VendorCmd>/ {
+                printf "%s", additions
+                in_set_wifi = 0
+                inserted = 1
+            }
+            { print }
+            END {
+                if (!found_set_wifi || !inserted)
+                    exit 42
+            }
+        ' "$vendor_cmd" > "$output"; then
+            rm -f "$additions" "$output"
+            error "vendor_cmd.xml中找不到SET_WIFI_CONFIG" \
+                  "SET_WIFI_CONFIG was not found in vendor_cmd.xml"
+            return 1
+        fi
+        mv -f "$output" "$vendor_cmd"
+        chmod 0644 "$vendor_cmd"
+    fi
+    rm -f "$additions" "$output"
+
+    if ! xmlstarlet val "$vendor_cmd" >/dev/null 2>&1; then
+        error "修复后的vendor_cmd.xml无效" \
+              "Patched vendor_cmd.xml is invalid"
+        return 1
+    fi
+    while read -r name id; do
+        name_count=$(xmlstarlet sel -t -v \
+            "count(/WCN_VenTool/VendorCmd[@name='SET_WIFI_CONFIG']/Attribute[@name='${name}'])" \
+            "$vendor_cmd" 2>/dev/null) || name_count=0
+        exact_count=$(xmlstarlet sel -t -v \
+            "count(/WCN_VenTool/VendorCmd[@name='SET_WIFI_CONFIG']/Attribute[@name='${name}' and @ID='${id}' and @TYPE='u8'])" \
+            "$vendor_cmd" 2>/dev/null) || exact_count=0
+        if [[ "$name_count" != 1 || "$exact_count" != 1 ]]; then
+            error "vendor_cmd.xml缺少Android 17属性: ${name}" \
+                  "vendor_cmd.xml is missing Android 17 attribute: ${name}"
+            return 1
+        fi
+    done <<'EOF'
+CONFIG_TX_NSS_2GHZ 110
+CONFIG_RX_NSS_2GHZ 111
+CONFIG_TX_NSS_5GHZ 112
+CONFIG_RX_NSS_5GHZ 113
+CONFIG_NUM_TX_CHAINS_2GHZ 114
+CONFIG_NUM_RX_CHAINS_2GHZ 115
+CONFIG_NUM_TX_CHAINS_5GHZ 116
+CONFIG_NUM_RX_CHAINS_5GHZ 117
+EOF
+
+    green "已补齐Android 17 Wi-Fi NSS/chain vendor命令" \
+          "Installed Android 17 Wi-Fi NSS/chain vendor commands"
+}
+
 dedupe_selinux_context_file() {
     local file="$1"
     local temp
@@ -400,6 +522,7 @@ validate_critical_port_artifacts() {
 
     if [[ ${port_android_version:-0} -ge 17 ]];then
         local nfc_apk wificond_rc oiface qape_lib snapdragon_v1_lib
+        local se_omapi_vintf
         local qcc_rc qcc_protobuf
         nfc_apk="build/portrom/images/system/system/priv-app/NfcNci/NfcNci.apk"
         wificond_rc="build/portrom/images/system/system/etc/init/wificond.rc"
@@ -408,6 +531,7 @@ validate_critical_port_artifacts() {
         snapdragon_v1_lib="build/portrom/images/system_ext/lib64/vendor.qti.snapdragonServices-V1-ndk.so"
         qcc_rc="build/portrom/images/system_ext/etc/init/vendor.qti.hardware.qccsyshal@1.2-service.rc"
         qcc_protobuf="build/portrom/images/system_ext/lib64/libprotobuf-cpp-full-5.26.1.so"
+        se_omapi_vintf="build/portrom/images/odm/etc/vintf/manifest/secure_element_omapi_service.xml"
 
         if [[ ! -f "$nfc_apk" ]] ||
            ! apksigner verify "$nfc_apk" >/dev/null 2>&1;then
@@ -419,6 +543,13 @@ validate_critical_port_artifacts() {
            ! grep -Fqx 'service wificond /system/bin/wificond' "$wificond_rc";then
             error "Android 17缺少wificond init服务" \
                   "Android 17 wificond init service is missing"
+            failed=1
+        fi
+        if [[ ! -s "$se_omapi_vintf" ]] ||
+           ! xmlstarlet val "$se_omapi_vintf" >/dev/null 2>&1 ||
+           [[ "$(xmlstarlet sel -t -v 'count(/manifest[@type="device"]/hal[@format="aidl"][name="android.se.omapi" and version="1"]/interface[name="ISecureElementService" and instance="default"])' "$se_omapi_vintf" 2>/dev/null)" != "1" ]];then
+            error "Android 17 Secure Element OMAPI VINTF声明缺失或无效" \
+                  "Android 17 Secure Element OMAPI VINTF declaration is missing or invalid"
             failed=1
         fi
         if [[ -x "$oiface" ]] &&
@@ -435,6 +566,36 @@ validate_critical_port_artifacts() {
             error "缺少protobuf 5.26.1的QCC HIDL服务仍被启用" \
                   "QCC HIDL remains enabled without protobuf 5.26.1"
             failed=1
+        fi
+
+        local wifi_service vendor_cmd name id name_count exact_count
+        wifi_service="build/portrom/images/odm/bin/hw/vendor.oplus.hardware.wifi-aidl-service"
+        vendor_cmd="build/portrom/images/vendor/etc/wifi/vendor_cmd.xml"
+        if [[ -f "$wifi_service" ]] &&
+           strings "$wifi_service" 2>/dev/null |
+               grep -qF '/vendor/bin/vendor_cmd_tool';then
+            while read -r name id;do
+                name_count=$(xmlstarlet sel -t -v \
+                    "count(/WCN_VenTool/VendorCmd[@name='SET_WIFI_CONFIG']/Attribute[@name='${name}'])" \
+                    "$vendor_cmd" 2>/dev/null) || name_count=0
+                exact_count=$(xmlstarlet sel -t -v \
+                    "count(/WCN_VenTool/VendorCmd[@name='SET_WIFI_CONFIG']/Attribute[@name='${name}' and @ID='${id}' and @TYPE='u8'])" \
+                    "$vendor_cmd" 2>/dev/null) || exact_count=0
+                if [[ ! -s "$vendor_cmd" || "$name_count" != 1 || "$exact_count" != 1 ]];then
+                    error "Android 17 Wi-Fi vendor命令缺失: ${name}" \
+                          "Android 17 Wi-Fi vendor command is missing: ${name}"
+                    failed=1
+                fi
+            done <<'EOF'
+CONFIG_TX_NSS_2GHZ 110
+CONFIG_RX_NSS_2GHZ 111
+CONFIG_TX_NSS_5GHZ 112
+CONFIG_RX_NSS_5GHZ 113
+CONFIG_NUM_TX_CHAINS_2GHZ 114
+CONFIG_NUM_RX_CHAINS_2GHZ 115
+CONFIG_NUM_TX_CHAINS_5GHZ 116
+CONFIG_NUM_RX_CHAINS_5GHZ 117
+EOF
         fi
     fi
 
