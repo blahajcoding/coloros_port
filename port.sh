@@ -2357,59 +2357,33 @@ if [[ ${port_android_version} == 17 ]];then
     cp -f "${a17_se_vintf_source}" "${a17_se_vintf_target}"
     chmod 0644 "${a17_se_vintf_target}"
 
-    # The A17 system_ext OIface binary is linked against two Qualcomm stable
-    # AIDL libraries supplied by the donor vendor. A legacy SM8350 vendor does
-    # not ship them, so preserve only these userspace ABI libraries while
-    # keeping the rest of the device-matched base vendor stack.
+    # The A17 system_ext OIface binary links two Qualcomm stable AIDL
+    # libraries that a legacy SM8350 vendor does not ship. Install the copies
+    # bundled under devices/common/ instead of extracting a donor vendor.img.
     a17_oiface="build/portrom/images/system_ext/bin/oiface"
     a17_qape_lib="build/portrom/images/system_ext/lib64/vendor.qti.snapdragonServices.qape-V1-ndk.so"
     a17_snapdragon_v1_lib="build/portrom/images/system_ext/lib64/vendor.qti.snapdragonServices-V1-ndk.so"
+    a17_oiface_assets="devices/common/a17-oiface-libs/system_ext/lib64"
     if [[ -x "${a17_oiface}" ]] &&
        readelf -d "${a17_oiface}" 2>/dev/null |
            grep -qF '[vendor.qti.snapdragonServices.qape-V1-ndk.so]';then
-        a17_donor_vendor_img=""
-        for a17_vendor_candidate in \
-            "build/${version_name}/vendor.img" \
-            "build/${version_name2:-}/vendor.img";do
-            if [[ -f "${a17_vendor_candidate}" ]];then
-                a17_donor_vendor_img="${a17_vendor_candidate}"
-                break
-            fi
-        done
-        if [[ -n "${a17_donor_vendor_img}" ]];then
-            a17_donor_vendor_dir="tmp/a17-donor-vendor"
-            rm -rf "${a17_donor_vendor_dir}"
-            mkdir -p "${a17_donor_vendor_dir}"
-            if ! extract.erofs -x -i "${a17_donor_vendor_img}" \
-                -o "${a17_donor_vendor_dir}" >/dev/null 2>&1;then
-                error "无法提取A17 donor vendor兼容库" \
-                      "Failed to extract A17 donor vendor compatibility libraries"
-                exit 1
-            fi
-            a17_donor_qape=$(find "${a17_donor_vendor_dir}" -type f \
-                -name 'vendor.qti.snapdragonServices.qape-V1-ndk.so' -print -quit)
-            a17_donor_snapdragon_v2=$(find "${a17_donor_vendor_dir}" -type f \
-                -name 'vendor.qti.snapdragonServices-V2-ndk.so' -print -quit)
-            if [[ ! -f "${a17_donor_qape}" || ! -f "${a17_donor_snapdragon_v2}" ]];then
-                error "A17 donor vendor缺少OIface兼容库" \
-                      "A17 donor vendor is missing OIface compatibility libraries"
-                exit 1
-            fi
-            mkdir -p build/portrom/images/system_ext/lib64
-            cp -f "${a17_donor_qape}" "${a17_qape_lib}"
-            # The donor exposes revision 2 of the stable interface. It is a
-            # backward-compatible superset and was verified on-device with
-            # the A17 OIface client; install an additional V1 filename alias.
-            cp -f "${a17_donor_snapdragon_v2}" "${a17_snapdragon_v1_lib}"
-            chmod 0644 "${a17_qape_lib}" "${a17_snapdragon_v1_lib}"
-            rm -rf "${a17_donor_vendor_dir}"
-            green "已补齐A17 OIface Qualcomm AIDL库" \
-                  "Installed A17 OIface Qualcomm AIDL libraries"
-        elif [[ ! -f "${a17_qape_lib}" || ! -f "${a17_snapdragon_v1_lib}" ]];then
-            error "无法定位A17 donor vendor.img以修复OIface" \
-                  "Cannot locate the A17 donor vendor.img required for OIface"
+        if [[ ! -f "${a17_oiface_assets}/vendor.qti.snapdragonServices.qape-V1-ndk.so" ||
+              ! -f "${a17_oiface_assets}/vendor.qti.snapdragonServices-V2-ndk.so" ]];then
+            error "缺少A17 OIface兼容库资产" \
+                  "A17 OIface compatibility library assets are missing"
             exit 1
         fi
+        mkdir -p build/portrom/images/system_ext/lib64
+        cp -f "${a17_oiface_assets}/vendor.qti.snapdragonServices.qape-V1-ndk.so" \
+            "${a17_qape_lib}"
+        # The bundled library exposes revision 2 of the stable interface. It is
+        # a backward-compatible superset and was verified on-device with the
+        # A17 OIface client; install an additional V1 filename alias.
+        cp -f "${a17_oiface_assets}/vendor.qti.snapdragonServices-V2-ndk.so" \
+            "${a17_snapdragon_v1_lib}"
+        chmod 0644 "${a17_qape_lib}" "${a17_snapdragon_v1_lib}"
+        green "已补齐A17 OIface Qualcomm AIDL库" \
+              "Installed A17 OIface Qualcomm AIDL libraries"
     fi
 
     # The preview donor also starts the legacy QCC HIDL service even though it
