@@ -1394,7 +1394,8 @@ targetSystemUI=$(find build/portrom/images/ -name "SystemUI.apk")
 if [[ -f build/${app_patch_folder}/patched/SystemUI.apk ]]; then
         blue "复制已经处理过的SystemUI.apk"
         cp -rfv build/${app_patch_folder}/patched/SystemUI.apk $targetSystemUI
-     
+        sign_port_apk "$targetSystemUI" || exit 1
+
 elif [[ -f "$targetSystemUI" ]]; then
     
     cp -rf $targetSystemUI tmp/$(basename $targetSystemUI).bak
@@ -1426,6 +1427,7 @@ elif [[ -f "$targetSystemUI" ]]; then
     done
     java -jar bin/apktool/APKEditor.jar b -f -i tmp/SystemUI -o build/${app_patch_folder}/patched/SystemUI.apk $extra_args
     cp -rfv build/${app_patch_folder}/patched/SystemUI.apk $targetSystemUI
+    sign_port_apk "$targetSystemUI" || exit 1
 fi
 
 targetAOD=$(find build/portrom/images/ -name "Aod.apk")
@@ -1440,6 +1442,7 @@ if [[ -f $targetAOD ]] && [[ $base_product_first_api_level -le 35 ]] ;then
     python3 bin/patchmethod_v2.py $targetCommonUtilsSmali isFirstApiLevelOS16 -return true
     python3 bin/patchmethod_v2.py $targetSettingsSmali getKeyAodAllDaySupportSettings -return true
     java -jar bin/apktool/APKEditor.jar b -f -i tmp/Aod -o $targetAOD $extra_args
+    sign_port_apk "$targetAOD" || exit 1
 fi
 yellow "删除多余的App" "Debloating..." 
 # List of apps to be removed
@@ -2334,7 +2337,12 @@ if [[ ${port_android_version} == 17 ]];then
     # policy but omit its init_rc. The framework then creates wlan0 through
     # the vendor HAL but immediately tears it down because IWificond is absent.
     # Restore the standard AOSP service definition.
-    if [[ -x build/portrom/images/system/system/bin/wificond ]];then
+    # /system/bin/wificond is normally a symlink into system_ext, so a host
+    # `-x` test fails: the absolute link target only resolves on device.
+    # Detect the real binary in either partition instead.
+    if [[ -e build/portrom/images/system_ext/bin/wificond ||
+          -e build/portrom/images/system/system/bin/wificond ]];then
+        mkdir -p build/portrom/images/system/system/etc/init
         cp -f devices/common/wificond.rc \
             build/portrom/images/system/system/etc/init/wificond.rc
         chmod 0644 build/portrom/images/system/system/etc/init/wificond.rc

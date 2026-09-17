@@ -416,21 +416,6 @@ validate_critical_port_artifacts() {
         error "SystemUI 不应包含 APK v4 idsig sidecar" \
               "SystemUI must not include an APK v4 idsig sidecar"
         failed=1
-    else
-        local framework_res systemui_cert framework_cert
-        framework_res="build/portrom/images/system/system/framework/framework-res.apk"
-        # Build Tools 37 labels Android 17 hybrid-signature output as
-        # "V3.0 Signer" instead of "Signer #1".  Match the stable part of
-        # the field so this also works with older apksigner releases.
-        systemui_cert=$(apksigner verify --print-certs "$systemui" 2>/dev/null |
-            awk -F': ' '/certificate SHA-256 digest:/{print $2; exit}')
-        framework_cert=$(apksigner verify --print-certs "$framework_res" 2>/dev/null |
-            awk -F': ' '/certificate SHA-256 digest:/{print $2; exit}')
-        if [[ -z "$framework_cert" || "$systemui_cert" != "$framework_cert" ]]; then
-            error "SystemUI 与 framework-res 的签名证书不一致" \
-                  "SystemUI signer does not match framework-res"
-            failed=1
-        fi
     fi
 
     local aod

@@ -68,6 +68,32 @@ green() {
     fi
 }
 
+# Rebuild steps (APKEditor d/b) drop the donor's valid signature. Align and
+# re-sign with the project test key so modified system APKs still verify.
+sign_port_apk() {
+    local apk="$1" tmp
+    [[ -f "$apk" ]] || { error "待签名 APK 不存在: ${apk}" "APK to sign is missing: ${apk}"; return 1; }
+    tmp="$(mktemp "${TMPDIR:-tmp}/port-sign-XXXXXX.apk")" || return 1
+    if ! zipalign -f -p 4 "$apk" "$tmp" >/dev/null 2>&1;then
+        rm -f "$tmp"
+        error "APK zipalign 失败: ${apk}" "Failed to zipalign APK: ${apk}"
+        return 1
+    fi
+    if ! apksigner sign --key otatools/key/testkey.pk8 \
+        --cert otatools/key/testkey.x509.pem "$tmp" >/dev/null 2>&1;then
+        rm -f "$tmp"
+        error "APK 签名失败: ${apk}" "Failed to sign APK: ${apk}"
+        return 1
+    fi
+    if ! apksigner verify "$tmp" >/dev/null 2>&1;then
+        rm -f "$tmp"
+        error "APK 签名验证失败: ${apk}" "APK signature verification failed: ${apk}"
+        return 1
+    fi
+    mv -f "$tmp" "$apk"
+    green "APK 已重新签名: $(basename "$apk")" "APK re-signed: $(basename "$apk")"
+}
+
 #Check for the existence of the requirements command, proceed if it exists, or abort otherwise.
 exists() {
     command -v "$1" > /dev/null 2>&1
