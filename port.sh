@@ -26,6 +26,72 @@ export PATH=$(pwd)/bin/$(uname)/$(uname -m)/:$(pwd)/otatools/bin/:$PATH
 # Import functions
 source functions.sh
 
+# Import tqmane Android 17 compatibility library
+source "${work_dir}/lib/compat_fixes.sh"
+source "${work_dir}/lib/selinux_merge.sh"
+source "${work_dir}/lib/opex_patch.sh"
+
+# 可在 bin/port_config 中更改
+config_value() {
+    local key="$1"
+    local default_value="${2:-}"
+    local value
+    value=$(
+        awk -F= -v key="$key" '
+            $1 ~ "^[[:space:]]*" key "[[:space:]]*$" {
+                sub(/^[^=]*=/, "")
+                sub(/[[:space:]]+#.*$/, "")
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+                print
+                exit
+            }
+        ' "${work_dir}/bin/port_config"
+    )
+    printf '%s\n' "${value:-$default_value}"
+}
+
+a17_patch_vendor_context_file() {
+    local a17_contexts_file="$1"
+    local a17_backup_file="$2"
+    local a17_tmp_file="${a17_contexts_file}.a17.$$"
+
+    [[ -f "${a17_contexts_file}" ]] || return 2
+    if [[ ! -e "${a17_backup_file}" ]];then
+        mkdir -p "$(dirname "${a17_backup_file}")" || return 1
+        cp -p "${a17_contexts_file}" "${a17_backup_file}" || return 1
+    fi
+
+    # Keep explicit overlay APK entries compatible with Android 17's
+    # vendor_overlay_file type.  The recursive rule below covers any other
+    # vendor overlay files introduced by the port.
+    if ! awk '
+        BEGIN {
+            count = split("FrameworksResTarget_Vendor SecureElementResTarget_Vendor WifiResMainlineTarget WifiResMainlineTarget_spf WifiResTarget WifiResTarget_spf", names, " ");
+        }
+        {
+            for (i = 1; i <= count; ++i) {
+                if (index($0, "/vendor/overlay/" names[i]) == 1)
+                    sub(/u:object_r:vendor_file:s0[[:space:]]*$/, "u:object_r:vendor_overlay_file:s0");
+            }
+            print;
+        }
+    ' "${a17_contexts_file}" > "${a17_tmp_file}";then
+        rm -f "${a17_tmp_file}"
+        return 1
+    fi
+    mv -f "${a17_tmp_file}" "${a17_contexts_file}" || {
+        rm -f "${a17_tmp_file}"
+        return 1
+    }
+
+    grep -Fq '/vendor/overlay(/.*)? u:object_r:vendor_overlay_file:s0' "${a17_contexts_file}" || \
+        printf '%s\n' '/vendor/overlay(/.*)? u:object_r:vendor_overlay_file:s0' >> "${a17_contexts_file}" || return 1
+    grep -Eq '^/dev/ion[[:space:]]' "${a17_contexts_file}" || \
+        printf '%s\n' '/dev/ion u:object_r:ion_device:s0' >> "${a17_contexts_file}" || return 1
+    grep -Fq '/vendor/overlay(/.*)? u:object_r:vendor_overlay_file:s0' "${a17_contexts_file}" && \
+        grep -Eq '^/dev/ion[[:space:]]+u:object_r:ion_device:s0$' "${a17_contexts_file}"
+}
+
 check unzip aria2c 7z zip java python3 zstd bc xmlstarlet
 
 blue "Initialising submodules"

@@ -1011,3 +1011,33 @@ resolveDownloadCheck() {
 fetchOTA() {
     python tomboy_lite.py --anti 1 --mode taste $1 $2 | grep downloadCheck
 }
+
+to_crlf() {
+    local file="$1"
+    local temp
+    temp=$(mktemp "${TMPDIR:-/tmp}/crlf.XXXXXX")
+    awk '{ sub(/\r$/, ""); printf "%s\r\n", $0 }' "$file" > "$temp" || {
+        rm -f "$temp"
+        return 1
+    }
+    cat "$temp" > "$file"
+    rm -f "$temp"
+}
+
+align_apk_in_place() {
+    local apk="$1"
+    local aligned="${apk}.aligned"
+
+    zipalign -p -f 4 "$apk" "$aligned" >/dev/null 2>&1 || {
+        rm -f "$aligned"
+        error "APK 对齐失败: $(basename "$apk")" \
+              "APK alignment failed: $(basename "$apk")"
+        return 1
+    }
+    mv -f "$aligned" "$apk"
+    zipalign -c -p 4 "$apk" >/dev/null 2>&1 || {
+        error "APK 对齐验证失败: $(basename "$apk")" \
+              "APK alignment verification failed: $(basename "$apk")"
+        return 1
+    }
+}
