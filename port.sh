@@ -949,7 +949,7 @@ fi
         cp -rfv build/${app_patch_folder}/patched/AIUnit.apk $targetAIUnit 
     fi
 
-if [[ $port_android_version == 16 ]] && [[ $base_android_version -lt 15 ]] ;then
+if [[ $port_android_version -gt 16 ]] && [[ $base_android_version -lt 15 ]] ;then
     # workaround fix AI Eraser
     cp build/portrom/images/odm/lib64/libaiboost.so build/portrom/images/my_product/lib64/libaiboost.so
     # sed -i 's|^/odm/lib64/libaiboost\.so.*$|/odm/lib64/libaiboost\.so u:object_r:same_process_hal_file:s0|' build/portrom/images/config/odm_file_contexts
@@ -1933,7 +1933,7 @@ if  [[ "${base_product_device}" == "OnePlus9Pro" ]] ||[[ "${base_product_device}
     echo -e "\n[FeatureTorch]\n    isSupportTorchStrengthLevel = TRUE\n    maxStrengthLevel = 4\n    defaultStrengthLevel = 4\n " >> build/portrom/images/odm/etc/camera/CameraHWConfiguration.config
 fi
 
-if [[ ${port_android_version} == 16 ]] && [[ ${base_android_version} -lt 15 ]];then
+if [[ ${port_android_version} -ge 16 ]] && [[ ${base_android_version} -lt 15 ]];then
     rm -rf build/portrom/images/system_ext/priv-app/com.qualcomm.location
     #remove_feature "oplus.software.display.dcbacklight_support" force
     if [[ -f  devices/common/nfc_fix_a16_v2.zip ]];then
@@ -1963,6 +1963,97 @@ if [[ ${port_android_version} == 16 ]] && [[ ${base_android_version} -lt 15 ]];t
     fi
 fi
 
+# Android 17 + legacy vendor post-boot compatibility fixes.
+# 1. Restore the 30.0 SELinux compatibility mapping needed by first-stage init
+#    when an Android 11 vendor (SM8250/SM8350) is combined with A17 system.
+# 2. Allow renameat2 in qspm seccomp policy so qspmhal does not die with SIGSYS.
+# 3. Keep the A17 Wi-Fi APEX and set config_wifiChannelUtilizationOverrideEnabled
+#    to true in the Oplus Wi-Fi RRO, avoiding the radioStats NPE.
+if [[ ${port_android_version} == 17 ]];then
+    blue "Android 17 兼容修复" "Android 17 compatibility fixes"
+    mkdir -p build/diagnostics/a17-compat/originals
+
+    # SELinux 30.0 mapping: only copy from trusted assets, never rename the
+    # Android 17 31.0 mapping to 30.0.
+    selinux_map_source="${PORT_SELINUX_MAP_SOURCE:-devices/common/selinux_mapping/android11_vendor}"
+    if [[ ! -d ${selinux_map_source}/system ]];then
+        error "缺少可信 SELinux 30.0 mapping 来源: ${selinux_map_source}" \
+              "Missing trusted SELinux 30.0 mapping source: ${selinux_map_source}"
+        exit 1
+    fi
+    for map_part in system system_ext product;do
+        source_map_dir="${selinux_map_source}/${map_part}"
+        case ${map_part} in
+            system) target_map_dir="build/portrom/images/system/system/etc/selinux/mapping" ;;
+            system_ext|product) target_map_dir="build/portrom/images/${map_part}/etc/selinux/mapping" ;;
+        esac
+        mkdir -p "${target_map_dir}"
+        for map_file in 30.0.cil 30.0.compat.cil;do
+            source_map_file="${source_map_dir}/${map_file}"
+            target_map_file="${target_map_dir}/${map_file}"
+            [[ ${map_part} != "system" && ${map_file} == "30.0.compat.cil" ]] && continue
+            if [[ -s "${target_map_file}" ]] && grep -Eq '^\((type|typeattribute|typeattributeset|expandtypeattribute|roletype|allow|neverallow)[[:space:]]' "${target_map_file}";then
+                blue "已存在有效 ${map_part}/${map_file}，保留当前文件" "Keeping existing valid ${map_part}/${map_file}"
+                continue
+            fi
+            if [[ ! -f "${source_map_file}" ]] || ! grep -Eq '^\((type|typeattribute|typeattributeset|expandtypeattribute|roletype|allow|neverallow)[[:space:]]' "${source_map_file}";then
+                error "SELinux mapping 来源无效: ${source_map_file}" "Invalid SELinux mapping source: ${source_map_file}"
+                exit 1
+            fi
+            [[ -f "${target_map_file}" ]] && cp -p "${target_map_file}" "build/diagnostics/a17-compat/originals/${map_part}-${map_file}"
+            cp -p "${source_map_file}" "${target_map_file}"
+            green "补齐 ${map_part}/${map_file}" "Installed ${map_part}/${map_file}"
+        done
+    done
+
+    # qspm seccomp: add renameat2 after the existing renameat rule (or at end).
+    qspm_policy="build/portrom/images/vendor/etc/seccomp_policy/qspm.policy"
+    if [[ -f "${qspm_policy}" ]];then
+        [[ -f build/diagnostics/a17-compat/originals/qspm.policy ]] || cp -p "${qspm_policy}" build/diagnostics/a17-compat/originals/qspm.policy
+        if ! grep -qxF "renameat2: 1" "${qspm_policy}";then
+            if grep -qxF "renameat: 1" "${qspm_policy}";then
+                sed -i '/^renameat: 1$/a renameat2: 1' "${qspm_policy}"
+            else
+                echo "renameat2: 1" >> "${qspm_policy}"
+            fi
+        fi
+        [[ $(grep -cFx "renameat2: 1" "${qspm_policy}") -eq 1 ]] || { error "qspm.policy 中 renameat2 规则数量异常" "Invalid renameat2 rule count in qspm.policy"; exit 1; }
+        green "qspm 已放行 renameat2" "qspm allows renameat2"
+    else
+        yellow "未找到 qspm.policy，跳过 qspm 修复" "qspm.policy not found; skipping qspm fix"
+    fi
+
+    # Wi-Fi RRO: rebuild only when both framework resources and the RRO exist.
+    wifi_rro="build/portrom/images/system_ext/overlay/OplusWifiResource.apk"
+    framework_res="build/portrom/images/system/system/framework/framework-res.apk"
+    oplus_framework_res="build/portrom/images/system_ext/framework/oplus-framework-res.apk"
+    if [[ -f "${wifi_rro}" ]] && [[ -f "${framework_res}" ]] && [[ -f "${oplus_framework_res}" ]];then
+        [[ -f build/diagnostics/a17-compat/originals/OplusWifiResource.apk ]] || cp -p "${wifi_rro}" build/diagnostics/a17-compat/originals/OplusWifiResource.apk
+        if otatools/bin/aapt2 dump resources "${wifi_rro}" 2>/dev/null | awk '/bool\/config_wifiChannelUtilizationOverrideEnabled/{seen=1;next} seen && /^[[:space:]]*resource /{exit} seen && /^[[:space:]]*\(\)[[:space:]]+true[[:space:]]*$/{found=1;exit} END{exit(found?0:1)}';then
+            blue "OplusWifiResource.apk 已是兼容配置" "OplusWifiResource.apk already compatible"
+        else
+            a17_tmp=$(mktemp -d "${TMPDIR:-tmp}/a17-wifi.XXXXXX")
+            mkdir -p "${a17_tmp}/framework"
+            java -jar bin/apktool/apktool.jar if -p "${a17_tmp}/framework" "${framework_res}" || { error "安装 framework-res 失败" "Failed to install framework-res"; exit 1; }
+            java -jar bin/apktool/apktool.jar if -p "${a17_tmp}/framework" "${oplus_framework_res}" || { error "安装 oplus-framework-res 失败" "Failed to install oplus-framework-res"; exit 1; }
+            java -jar bin/apktool/apktool.jar d -f -p "${a17_tmp}/framework" -o "${a17_tmp}/OplusWifiResource" "${wifi_rro}" || { error "解码 OplusWifiResource 失败" "Failed to decode OplusWifiResource"; exit 1; }
+            bool_file=$(grep -R -l --include="bools.xml" "config_wifiChannelUtilizationOverrideEnabled" "${a17_tmp}/OplusWifiResource/res" 2>/dev/null | head -n 1)
+            [[ -n "${bool_file}" ]] || { error "RRO 中不存在 config_wifiChannelUtilizationOverrideEnabled" "RRO bool not found"; exit 1; }
+            sed -E -i 's#(<bool[[:space:]]+name="config_wifiChannelUtilizationOverrideEnabled">)[^<]*(</bool>)#\1true\2#' "${bool_file}"
+            grep -Eq '<bool[[:space:]]+name="config_wifiChannelUtilizationOverrideEnabled">true</bool>' "${bool_file}" || { error "写入 Wi-Fi 兼容值失败" "Failed to set Wi-Fi bool"; exit 1; }
+            java -jar bin/apktool/apktool.jar b -f -p "${a17_tmp}/framework" -o "${a17_tmp}/OplusWifiResource-unsigned.apk" "${a17_tmp}/OplusWifiResource" || { error "重编译 OplusWifiResource 失败" "Failed to rebuild OplusWifiResource"; exit 1; }
+            otatools/bin/apksigner sign --in "${a17_tmp}/OplusWifiResource-unsigned.apk" --out "${a17_tmp}/OplusWifiResource-signed.apk" --key key/testkey.pk8 --cert key/testkey.x509.pem --v1-signing-enabled true --v2-signing-enabled true --v3-signing-enabled true || { error "签名 OplusWifiResource 失败" "Failed to sign OplusWifiResource"; exit 1; }
+            otatools/bin/apksigner verify --verbose "${a17_tmp}/OplusWifiResource-signed.apk" || { error "签名验证失败" "Signature verification failed"; exit 1; }
+            cp -p "${a17_tmp}/OplusWifiResource-signed.apk" "${wifi_rro}"
+            green "OplusWifiResource.apk 修复并签名完成" "OplusWifiResource.apk rebuilt and signed"
+            rm -rf "${a17_tmp}"
+        fi
+    else
+        yellow "缺少 OplusWifiResource 或 framework 资源，跳过 Wi-Fi RRO 修复" "Missing RRO or framework resources; skipping Wi-Fi RRO fix"
+    fi
+fi
+
+
 if [[ -f devices/common/hdr_fix.zip ]] && [[ $base_android_version -le 14 ]];then
     unzip -o devices/common/hdr_fix.zip -d build/portrom/images/
     echo "persist.sys.feature.uhdr.support=true" >> build/portrom/images/my_product/etc/bruce/build.prop
@@ -1984,7 +2075,7 @@ else
     yellow "devices/${base_product_device}/overlay 未找到" "devices/${base_product_device}/overlay not found" 
 fi
 
-if [[ -f "devices/${base_product_device}/odm_selinux_fix_a16.zip" ]] && [[ $port_android_version == 16 ]]; then
+if [[ -f "devices/${base_product_device}/odm_selinux_fix_a16.zip" ]] && [[ $port_android_version -gt 16 ]]; then
     unzip -o devices/${base_product_device}/odm_selinux_fix_a16.zip -d ${work_dir}/build/portrom/images/
 fi
 
