@@ -6,3 +6,4 @@ devices/*/vendor_boot.img
 devices/*/bpf-5.15-a17-*.zip
 cache/
 /*.zip
+__pycache__/
