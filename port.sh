@@ -1028,10 +1028,21 @@ elif [[ -f "$targetOplusService" ]];then
         error "oplus-services.jar 重编译失败" "Failed to rebuild oplus-services.jar"
         exit 1
     fi
+    if [[ ${port_android_version} -gt 17 ]];then
+        targetSmali=$(find tmp/OplusService -type f -name "OplusEngineerFwService.smali" -print -quit)
+        if [[ ! -f "$targetSmali" ]];then
+            error "oplus-services.jar 中未找到 OplusEngineerFwService.smali" \
+                  "OplusEngineerFwService.smali not found in oplus-services.jar"
+            exit 1
+        fi
+        if ! python3 bin/patchmethod.py "$targetSmali" getEngineerService -body "    .locals 1\n    const/4 v0, 0x0\n    return-object v0";then
+        error "oplus-services.jar 方法补丁失败" \
+              "oplus-services.jar method patch failed"
+        exit 1
+    fi
     validate_dex_archive "$oplus_services_cache" \
         "tmp/$(basename "$targetOplusService").bak" 1048576 || exit 1
     cp -fv "$oplus_services_cache" "$targetOplusService"
-
 fi
 
 if [[ ${base_device_family} == "OPSM8250" ]] || [[ ${base_device_family} == "OPSM8350" ]]; then
