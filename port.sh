@@ -31,67 +31,6 @@ source "${work_dir}/lib/compat_fixes.sh"
 source "${work_dir}/lib/selinux_merge.sh"
 source "${work_dir}/lib/opex_patch.sh"
 
-# 可在 bin/port_config 中更改
-config_value() {
-    local key="$1"
-    local default_value="${2:-}"
-    local value
-    value=$(
-        awk -F= -v key="$key" '
-            $1 ~ "^[[:space:]]*" key "[[:space:]]*$" {
-                sub(/^[^=]*=/, "")
-                sub(/[[:space:]]+#.*$/, "")
-                gsub(/^[[:space:]]+|[[:space:]]+$/, "")
-                print
-                exit
-            }
-        ' "${work_dir}/bin/port_config"
-    )
-    printf '%s\n' "${value:-$default_value}"
-}
-
-a17_patch_vendor_context_file() {
-    local a17_contexts_file="$1"
-    local a17_backup_file="$2"
-    local a17_tmp_file="${a17_contexts_file}.a17.$$"
-
-    [[ -f "${a17_contexts_file}" ]] || return 2
-    if [[ ! -e "${a17_backup_file}" ]];then
-        mkdir -p "$(dirname "${a17_backup_file}")" || return 1
-        cp -p "${a17_contexts_file}" "${a17_backup_file}" || return 1
-    fi
-
-    # Keep explicit overlay APK entries compatible with Android 17's
-    # vendor_overlay_file type.  The recursive rule below covers any other
-    # vendor overlay files introduced by the port.
-    if ! awk '
-        BEGIN {
-            count = split("FrameworksResTarget_Vendor SecureElementResTarget_Vendor WifiResMainlineTarget WifiResMainlineTarget_spf WifiResTarget WifiResTarget_spf", names, " ");
-        }
-        {
-            for (i = 1; i <= count; ++i) {
-                if (index($0, "/vendor/overlay/" names[i]) == 1)
-                    sub(/u:object_r:vendor_file:s0[[:space:]]*$/, "u:object_r:vendor_overlay_file:s0");
-            }
-            print;
-        }
-    ' "${a17_contexts_file}" > "${a17_tmp_file}";then
-        rm -f "${a17_tmp_file}"
-        return 1
-    fi
-    mv -f "${a17_tmp_file}" "${a17_contexts_file}" || {
-        rm -f "${a17_tmp_file}"
-        return 1
-    }
-
-    grep -Fq '/vendor/overlay(/.*)? u:object_r:vendor_overlay_file:s0' "${a17_contexts_file}" || \
-        printf '%s\n' '/vendor/overlay(/.*)? u:object_r:vendor_overlay_file:s0' >> "${a17_contexts_file}" || return 1
-    grep -Eq '^/dev/ion[[:space:]]' "${a17_contexts_file}" || \
-        printf '%s\n' '/dev/ion u:object_r:ion_device:s0' >> "${a17_contexts_file}" || return 1
-    grep -Fq '/vendor/overlay(/.*)? u:object_r:vendor_overlay_file:s0' "${a17_contexts_file}" && \
-        grep -Eq '^/dev/ion[[:space:]]+u:object_r:ion_device:s0$' "${a17_contexts_file}"
-}
-
 check unzip aria2c 7z zip java python3 zstd bc xmlstarlet
 
 blue "Initialising submodules"
@@ -1216,6 +1155,9 @@ elif [[ -f $targetAICallAssistant ]];then
         java -jar bin/apktool/APKEditor.jar b -f -i tmp/HeyTapSpeechAssist -o build/${app_patch_folder}/patched/HeyTapSpeechAssist.apk $extra_args
         cp -rfv build/${app_patch_folder}/patched/HeyTapSpeechAssist.apk $targetAICallAssistant 
 fi
+if [[ -f "$targetAICallAssistant" ]]; then
+    sign_apk_in_place "$targetAICallAssistant" || exit 1
+fi
 # patch_smali_with_apktool "HeyTapSpeechAssist.apk" "com/heytap/speechassist/aicall/setting/config/AiCallCommonBean.smali" ".method public final getSupportAiCall()Z/,/.end method" ".method public final getSupportAiCall()Z\n\t.locals 1\n\tconst\/4 v0, 0x1\n\treturn v0\n.end method" "regex"
 
 ota_patched=false
@@ -1243,6 +1185,7 @@ if [[ $ota_patched == "false" ]];then
         java -jar bin/apktool/APKEditor.jar b -f -i tmp/OTA -o  build/${app_patch_folder}/patched/OTA.apk  $extra_args
          cp -rfv build/${app_patch_folder}/patched/OTA.apk $targetOTA
     fi
+    [[ ! -f "$targetOTA" ]] || sign_apk_in_place "$targetOTA" || exit 1
 fi
 
 
@@ -1298,6 +1241,7 @@ fi
         java -jar bin/apktool/APKEditor.jar b -f -i tmp/AIUnit -o build/${app_patch_folder}/patched/AIUnit.apk  $extra_args
         cp -rfv build/${app_patch_folder}/patched/AIUnit.apk $targetAIUnit 
     fi
+    [[ ! -f "$targetAIUnit" ]] || sign_apk_in_place "$targetAIUnit" || exit 1
 
 if [[ $port_android_version -gt 16 ]] && [[ $base_android_version -lt 15 ]] ;then
     # workaround fix AI Eraser
@@ -1330,6 +1274,7 @@ elif [[ $base_android_version -lt 15 ]];then
         java -jar bin/apktool/APKEditor.jar b -f -i tmp/Gallery -o build/${app_patch_folder}/patched/OppoGallery2.apk $extra_args
         cp -rfv build/${app_patch_folder}/patched/OppoGallery2.apk $targetGallery 
     fi
+    [[ ! -f "$targetGallery" ]] || sign_apk_in_place "$targetGallery" || exit 1
 fi
 
 if [[ ${base_device_family} == "OPSM8250" ]] || [[ ${base_device_family} == "OPSM8350" ]];then
@@ -1347,6 +1292,7 @@ if [[ ${base_device_family} == "OPSM8250" ]] || [[ ${base_device_family} == "OPS
         java -jar bin/apktool/APKEditor.jar b -f -i tmp/Battery -o build/${app_patch_folder}/patched/Battery.apk $extra_args
         cp -rfv build/${app_patch_folder}/patched/Battery.apk $targetBattery 
     fi
+    [[ ! -f "$targetBattery" ]] || sign_apk_in_place "$targetBattery" || exit 1
 fi 
 
 targetSettings=$(find build/portrom/images/ -name "Settings.apk")
@@ -1365,6 +1311,7 @@ if [[ $port_android_version -ge 16 ]];then
         :cond_b
         return-void"
         java -jar bin/apktool/APKEditor.jar b -f -i tmp/Settings -o $targetSettings $extra_args
+        sign_apk_in_place "$targetSettings" || exit 1
     fi
 fi
 
@@ -1376,6 +1323,7 @@ if [[ ${regionmark} != "CN" ]] && [[ ${base_product_model} != "IN20*" ]];then
         targetSmali=$(find tmp -type f -name "DeviceChargeInfoController.smali")
         python3 bin/patchmethod_v2.py $targetSmali isPreferenceSupport
         java -jar bin/apktool/APKEditor.jar b -f -i tmp/Settings -o $targetSettings $extra_args
+        sign_apk_in_place "$targetSettings" || exit 1
     fi
 fi 
 
@@ -1388,13 +1336,14 @@ if [[ -f $targetOplusLauncher ]] && [[ $base_product_first_api_level -gt 34 ]];t
      targetSmali=$(find tmp -type f -path "*/com/oplus/basecommon/util/SystemPropertiesHelper.smali")
      python3 bin/patchmethod_v2.py $targetSmali getFirstApiLevel ".locals 1\n\tconst/16 v0, 0x22\n\treturn v0"
      java -jar bin/apktool/APKEditor.jar b -f -i tmp/OplusLauncher -o $targetOplusLauncher $extra_args
+     sign_apk_in_place "$targetOplusLauncher" || exit 1
 fi
 
 targetSystemUI=$(find build/portrom/images/ -name "SystemUI.apk")
 if [[ -f build/${app_patch_folder}/patched/SystemUI.apk ]]; then
         blue "复制已经处理过的SystemUI.apk"
         cp -rfv build/${app_patch_folder}/patched/SystemUI.apk $targetSystemUI
-        sign_port_apk "$targetSystemUI" || exit 1
+        sign_apk_in_place "$targetSystemUI" || exit 1
 
 elif [[ -f "$targetSystemUI" ]]; then
     
@@ -1427,7 +1376,7 @@ elif [[ -f "$targetSystemUI" ]]; then
     done
     java -jar bin/apktool/APKEditor.jar b -f -i tmp/SystemUI -o build/${app_patch_folder}/patched/SystemUI.apk $extra_args
     cp -rfv build/${app_patch_folder}/patched/SystemUI.apk $targetSystemUI
-    sign_port_apk "$targetSystemUI" || exit 1
+    sign_apk_in_place "$targetSystemUI" || exit 1
 fi
 
 targetAOD=$(find build/portrom/images/ -name "Aod.apk")
@@ -1442,7 +1391,7 @@ if [[ -f $targetAOD ]] && [[ $base_product_first_api_level -le 35 ]] ;then
     python3 bin/patchmethod_v2.py $targetCommonUtilsSmali isFirstApiLevelOS16 -return true
     python3 bin/patchmethod_v2.py $targetSettingsSmali getKeyAodAllDaySupportSettings -return true
     java -jar bin/apktool/APKEditor.jar b -f -i tmp/Aod -o $targetAOD $extra_args
-    sign_port_apk "$targetAOD" || exit 1
+    sign_apk_in_place "$targetAOD" || exit 1
 fi
 yellow "删除多余的App" "Debloating..." 
 # List of apps to be removed
