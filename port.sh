@@ -576,6 +576,13 @@ sed -i "s/ro.vendor.oplus.market.enname=.*/ro.vendor.oplus.market.enname=${base_
 
 sed -i '/ro.oplus.watermark.betaversiononly.enable=/d' build/portrom/images/my_manifest/build.prop
 
+if [[ $port_android_version -eq 15 ]] || [[ $port_android_version -ge 17 ]];then
+    if grep -q "ro.build.version.oplusrom.display" build/portrom/images/my_manifest/build.prop;then
+        sed -i '/^ro.build.version.oplusrom.display=/ s/$/ | lemonadeports/' build/portrom/images/my_manifest/build.prop
+    else
+        sed -i '/^ro.build.version.oplusrom.display=/ s/$/ | lemonadeports/' build/portrom/images/my_product/etc/bruce/build.prop
+    fi
+fi
 
 BASE_PROP="build/baserom/images/my_manifest/build.prop"
 PORT_PROP="build/portrom/images/my_manifest/build.prop"
@@ -1297,7 +1304,7 @@ fi
 
 targetSettings=$(find build/portrom/images/ -name "Settings.apk")
 
-if [[ $port_android_version -ge 16 ]];then
+if [[ $port_android_version -eq 16 ]];then
     if [[ -f $targetSettings ]];then
         blue "Adding credits to ROM version (shoutout to tg/tenseimods!)"
         cp -rf $targetSettings tmp/$(basename $targetSettings).bak
