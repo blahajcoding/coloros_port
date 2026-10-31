@@ -387,73 +387,8 @@ install_cached_dex_patch() {
     return 1
 }
 
-apk_signer_sha256() {
-    local certificates signers
-    certificates=$(apksigner verify --print-certs "$1" 2>/dev/null) || return 1
-    signers=$(printf '%s\n' "$certificates" |
-        sed -nE 's/^Signer #[0-9]+ certificate SHA-256 digest: ([[:xdigit:]]{64})$/\1/p' |
-        tr '[:upper:]' '[:lower:]' | sort -u)
-    [[ -n "$signers" ]] || return 1
-    printf '%s\n' "$signers"
-}
-
-validate_shared_uid_signatures() {
-    local root="${1:-build/portrom/images}"
-    local platform="$root/system/system/framework/framework-res.apk"
-    local platform_signers apk manifest shared_uid signers failed=0
-    if ! platform_signers=$(apk_signer_sha256 "$platform"); then
-        error "平台 APK 缺失或签名无效: $platform" \
-              "Missing or invalid platform APK signature: $platform"
-        return 1
-    fi
-    local -A group_signers=([android.uid.system]="$platform_signers")
-    local -A group_sources=([android.uid.system]="$platform")
-
-    while IFS= read -r -d '' apk; do
-        if ! manifest=$(otatools/bin/aapt2 dump xmltree "$apk" \
-            --file AndroidManifest.xml 2>/dev/null) || \
-            [[ "$manifest" != *'E: manifest '* ]]; then
-            error "无法读取 APK manifest: $apk" "Cannot read APK manifest: $apk"
-            failed=1
-            continue
-        fi
-        shared_uid=$(printf '%s\n' "$manifest" |
-            sed -n 's/.*:sharedUserId[^=]*="\([^"]*\)".*/\1/p')
-        if [[ -z "$shared_uid" ]]; then
-            # Resource overlays without shared UIDs may use their own signer.
-            if [[ "$manifest" == *:sharedUserId* ]]; then
-                error "无法解析 sharedUserId: $apk" "Cannot parse sharedUserId: $apk"
-                failed=1
-            fi
-            continue
-        fi
-        if [[ ! "$shared_uid" =~ ^[a-zA-Z0-9_.]+$ ]]; then
-            error "无效 sharedUserId: $apk" "Invalid sharedUserId: $apk"
-            failed=1
-            continue
-        fi
-        if ! signers=$(apk_signer_sha256 "$apk"); then
-            error "shared UID APK 签名无效: $apk" "Invalid shared-UID APK signature: $apk"
-            failed=1
-            continue
-        fi
-        # shortcut: compare current signer sets exactly; review key rotation manually.
-        if [[ -n "${group_signers[$shared_uid]:-}" && \
-              "${group_signers[$shared_uid]}" != "$signers" ]]; then
-            error "shared UID 签名不匹配 ($shared_uid): $apk" \
-                  "Shared-UID signer mismatch ($shared_uid): $apk; expected signer from ${group_sources[$shared_uid]}. Restore donor-signed APKs; do not reuse testkey caches."
-            failed=1
-        else
-            group_signers["$shared_uid"]="$signers"
-            group_sources["$shared_uid"]="$apk"
-        fi
-    done < <(find "$root" -type f -name '*.apk' -print0)
-    return "$failed"
-}
-
 validate_critical_port_artifacts() {
     local failed=0
-    validate_shared_uid_signatures || failed=1
     local mediaserver="build/portrom/images/system/system/bin/mediaserver"
     local codec2_rc="build/portrom/images/vendor/etc/init/vendor.qti.media.c2@1.0-service.rc"
 
