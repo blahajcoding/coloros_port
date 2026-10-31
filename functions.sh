@@ -1200,3 +1200,7 @@ a17_patch_vendor_context_file() {
         grep -Eq '^/dev/ion[[:space:]]+u:object_r:ion_device:s0$' "${a17_contexts_file}"
 }
 
+
+checkProp() {
+    grep -r --include="*.prop" "$1" build/$2/images/ | head -n1 | cut -d "=" -f2 | tr -d '\r'
+}

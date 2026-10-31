@@ -1147,6 +1147,8 @@ if [[ "$port_device_stack_compatible" != "true" ]] && \
 fi
 
 echo "ro.surface_flinger.game_default_frame_rate_override=120" >>  build/portrom/images/vendor/default.prop
+patch_protected_oem_apks=$(config_value patch_protected_oem_apks false)
+if [[ "$patch_protected_oem_apks" == "true" ]]; then
 #Unlock AI Call
 #targetAICallAssistant=$(find build/portrom/images/ -name "HeyTapSpeechAssist.apk")
 if [[ -f build/${app_patch_folder}/patched/HeyTapSpeechAssist.apk ]]; then
@@ -1249,6 +1251,7 @@ fi
         cp -rfv build/${app_patch_folder}/patched/AIUnit.apk $targetAIUnit 
     fi
     [[ ! -f "$targetAIUnit" ]] || sign_apk_in_place "$targetAIUnit" || exit 1
+fi
 
 if [[ $port_android_version -gt 16 ]] && [[ $base_android_version -lt 15 ]] ;then
     # workaround fix AI Eraser
@@ -1267,7 +1270,8 @@ if [[ -f devices/common/xeutoolbox.zip ]] && [[ $base_android_version -lt 15 ]] 
     echo "/system_ext/xbin/xeu_toolbox  u:object_r:toolbox_exec:s0" >> build/portrom/images/system_ext/etc/selinux/system_ext_file_contexts
     echo "(allow init toolbox_exec (file ((execute_no_trans))))" >> build/portrom/images/system_ext/etc/selinux/system_ext_sepolicy.cil
     unzip -o devices/common/xeutoolbox.zip -d build/portrom/images/
-elif [[ $base_android_version -lt 15 ]];then
+elif [[ $base_android_version -lt 15 ]] && \
+     [[ "$patch_protected_oem_apks" == "true" ]];then
     targetGallery=$(find build/portrom/images/ -name "OppoGallery2.apk")
     if [[ -f build/${app_patch_folder}/patched/OppoGallery2.apk ]]; then
             blue "复制已经处理过的OppoGallery2"
@@ -1284,6 +1288,7 @@ elif [[ $base_android_version -lt 15 ]];then
     [[ ! -f "$targetGallery" ]] || sign_apk_in_place "$targetGallery" || exit 1
 fi
 
+if [[ "$patch_protected_oem_apks" == "true" ]]; then
 if [[ ${base_device_family} == "OPSM8250" ]] || [[ ${base_device_family} == "OPSM8350" ]];then
     # Patch Battery Health Maximum capacity
     targetBattery=$(find build/portrom/images/ -name "Battery.apk")
@@ -1399,6 +1404,7 @@ if [[ -f $targetAOD ]] && [[ $base_product_first_api_level -le 35 ]] ;then
     python3 bin/patchmethod_v2.py $targetSettingsSmali getKeyAodAllDaySupportSettings -return true
     java -jar bin/apktool/APKEditor.jar b -f -i tmp/Aod -o $targetAOD $extra_args
     sign_apk_in_place "$targetAOD" || exit 1
+fi
 fi
 yellow "删除多余的App" "Debloating..." 
 # List of apps to be removed
@@ -2516,81 +2522,11 @@ if [[ ${port_android_version} == 17 ]];then
         yellow "未找到 qspm.policy，跳过 qspm 修复" "qspm.policy not found; skipping qspm fix"
     fi
 
-    # Wi-Fi RRO: rebuild only when both framework resources and the RRO exist.
-    wifi_rro="build/portrom/images/system_ext/overlay/OplusWifiResource.apk"
-    framework_res="build/portrom/images/system/system/framework/framework-res.apk"
-    oplus_framework_res="build/portrom/images/system_ext/framework/oplus-framework-res.apk"
-    if [[ -f "${wifi_rro}" ]] && [[ -f "${framework_res}" ]] && [[ -f "${oplus_framework_res}" ]];then
-        [[ -f build/diagnostics/a17-compat/originals/OplusWifiResource.apk ]] || cp -p "${wifi_rro}" build/diagnostics/a17-compat/originals/OplusWifiResource.apk
-        if otatools/bin/aapt2 dump resources "${wifi_rro}" 2>/dev/null | awk '/bool\/config_wifiChannelUtilizationOverrideEnabled/{seen=1;next} seen && /^[[:space:]]*resource /{exit} seen && /^[[:space:]]*\(\)[[:space:]]+true[[:space:]]*$/{found=1;exit} END{exit(found?0:1)}';then
-            blue "OplusWifiResource.apk 已是兼容配置" "OplusWifiResource.apk already compatible"
-        else
-            a17_tmp=$(mktemp -d "${TMPDIR:-tmp}/a17-wifi.XXXXXX")
-            # The legacy apktool bundled by the project cannot decode Android
-            # 17's resource table (Expected 0x00, got 0x08). APKEditor 1.4.9
-            # supports the current ARSC format and accepts both framework
-            # packages directly for decode and rebuild.
-            java -jar bin/apktool/APKEditor.jar d -f \
-                -i "${wifi_rro}" \
-                -o "${a17_tmp}/OplusWifiResource" \
-                -framework "${framework_res}" \
-                -framework "${oplus_framework_res}" || {
-                    error "解码 OplusWifiResource 失败" \
-                          "Failed to decode OplusWifiResource"
-                    exit 1
-                }
-            bool_file=$(grep -R -l --include="bools.xml" "config_wifiChannelUtilizationOverrideEnabled" "${a17_tmp}/OplusWifiResource/res" 2>/dev/null | head -n 1)
-            if [[ -z "${bool_file}" ]];then
-                bool_file=$(grep -R -l --include="bools.xml" \
-                    "config_wifiChannelUtilizationOverrideEnabled" \
-                    "${a17_tmp}/OplusWifiResource/resources" 2>/dev/null |
-                    head -n 1)
-            fi
-            [[ -n "${bool_file}" ]] || { error "RRO 中不存在 config_wifiChannelUtilizationOverrideEnabled" "RRO bool not found"; exit 1; }
-            sed -E -i 's#(<bool[[:space:]]+name="config_wifiChannelUtilizationOverrideEnabled">)[^<]*(</bool>)#\1true\2#' "${bool_file}"
-            grep -Eq '<bool[[:space:]]+name="config_wifiChannelUtilizationOverrideEnabled">true</bool>' "${bool_file}" || { error "写入 Wi-Fi 兼容值失败" "Failed to set Wi-Fi bool"; exit 1; }
-            java -jar bin/apktool/APKEditor.jar b -f \
-                -i "${a17_tmp}/OplusWifiResource" \
-                -o "${a17_tmp}/OplusWifiResource-unsigned.apk" \
-                -framework "${framework_res}" \
-                -framework "${oplus_framework_res}" || {
-                    error "重编译 OplusWifiResource 失败" \
-                          "Failed to rebuild OplusWifiResource"
-                    exit 1
-                }
-            zipalign -f -p 4 "${a17_tmp}/OplusWifiResource-unsigned.apk" \
-                "${a17_tmp}/OplusWifiResource-aligned.apk" || {
-                    error "OplusWifiResource zipalign失败" \
-                          "Failed to zipalign OplusWifiResource"
-                    exit 1
-                }
-            otatools/bin/apksigner sign \
-                --in "${a17_tmp}/OplusWifiResource-aligned.apk" \
-                --out "${a17_tmp}/OplusWifiResource-signed.apk" \
-                --key otatools/key/testkey.pk8 \
-                --cert otatools/key/testkey.x509.pem \
-                --v1-signing-enabled true \
-                --v2-signing-enabled true \
-                --v3-signing-enabled true \
-                --v4-signing-enabled false || {
-                    error "签名 OplusWifiResource 失败" \
-                          "Failed to sign OplusWifiResource"
-                    exit 1
-                }
-            otatools/bin/apksigner verify --verbose "${a17_tmp}/OplusWifiResource-signed.apk" || { error "签名验证失败" "Signature verification failed"; exit 1; }
-            if ! otatools/bin/aapt2 dump resources \
-                "${a17_tmp}/OplusWifiResource-signed.apk" 2>/dev/null |
-                awk '/bool\/config_wifiChannelUtilizationOverrideEnabled/{seen=1;next} seen && /^[[:space:]]*resource /{exit} seen && /^[[:space:]]*\(\)[[:space:]]+true[[:space:]]*$/{found=1;exit} END{exit(found?0:1)}';then
-                error "重建后Wi-Fi RRO值未生效" \
-                      "Rebuilt Wi-Fi RRO does not contain the compatibility value"
-                exit 1
-            fi
-            cp -p "${a17_tmp}/OplusWifiResource-signed.apk" "${wifi_rro}"
-            green "OplusWifiResource.apk 修复并签名完成" "OplusWifiResource.apk rebuilt and signed"
-            rm -rf "${a17_tmp}"
-        fi
-    else
-        yellow "缺少 OplusWifiResource 或 framework 资源，跳过 Wi-Fi RRO 修复" "Missing RRO or framework resources; skipping Wi-Fi RRO fix"
+    blue "Replacing Wi-Fi apex"
+    unzip -o devices/common/wifi_fix_a17.zip build/portrom/images
+    if [[ -d "build/portrom/images/odm/lib64/vendor.oplus.hardware.subsys_radio-V4-ndk_platform.so"
+        rm -rf build/portrom/images/odm/lib64/vendor.oplus.hardware.subsys_radio-V4-ndk_platform.so
+        unzip -o devices/common/ril_fix_A17.zip build/portrom/images/
     fi
 fi
 
@@ -2672,6 +2608,33 @@ blue "Optimising system..."
 echo "ZWNobyAiSnVuaSB3YXMgaGVyZSIgPj4gYnVpbGQvcG9ydHJvbS9pbWFnZXMvc3lzdGVtX2V4dC9ldGMvanVuaXBlcg==" | base64 -d | bash
 cp devices/common/lemonade.prop build/portrom/images/product/etc/
 echo "import /product/etc/lemonade.prop" >> build/portrom/images/system/system/build.prop
+if [[ ${port_android_version} -ge 16 ]]; then
+    for p in ro.oplus.sys.unirender.composeuni.enable \
+             persist.sys.unirender.composeuni.enable \
+             persist.sys.altair.composeuni.enable \
+             persist.sys.renderengine.retry \
+             persist.oplus.display.minifps.normalize \
+             persist.oplus.display.ogfr.exclusive \
+             persist.oplus.display.vrr.pdfr; do
+        remove_prop "$p" my_product/build.prop
+    done
+
+    for f in vendor/build.prop my_product/build.prop; do
+        [ -f "build/portrom/image/$f" ] || continue
+        remove_prop debug.sf.disable_client_composition_cache "$f"
+        printf 'debug.sf.disable_client_composition_cache=0\n' >> "build/portrom/image/$f"
+    done
+
+    RR=build/portrom/image/my_product/etc/refresh_rate_config.xml
+    if [ -f "$RR" ]; then
+        sed -i -E 's/[[:space:]]*extremeHighEnable="true"//g; s/[[:space:]]*maxrefreshsettings="[0-9]+"//g' "$RR"
+        sed -i -E '/<extremeHighRate /d' "$RR"
+        sed -i -E 's|<cameraOverride package="com.tencent.mobileqq" ?/>||' "$RR"
+    fi
+    rm -f build/portrom/image/my_product/etc/sys_background_vsync_config.xml
+fi
+
+
 
 for zip in $(find devices/${base_product_device}/ -name "*.zip"); do
     if unzip -l $zip | grep -q "anykernel.sh" ;then
