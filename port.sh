@@ -2526,7 +2526,7 @@ if [[ ${port_android_version} == 17 ]];then
     unzip -o devices/common/wifi_fix_a17.zip build/portrom/images
     if [[ -d "build/portrom/images/odm/lib64/vendor.oplus.hardware.subsys_radio-V4-ndk_platform.so"
         rm -rf build/portrom/images/odm/lib64/vendor.oplus.hardware.subsys_radio-V4-ndk_platform.so
-        unzip -o devices/common/ril_fix_A17.zip build/portrom/images/
+        unzip -o devices/common/ril_fix_A17.zip -d build/portrom/images/
     fi
 fi
 
