@@ -1609,7 +1609,8 @@ if [[ $(cat build/baserom/images/my_product/build.prop | grep "ro.oplus.audio.ef
    blue "修复杜比音效+多应用音量调节 SM8250/SM8350" "Fix Dolby + App Specific volume adjustment for SM8250/SM8350"
     #cp $source_dolby_lib build/portrom/images/system_ext/lib64/
     cp build/baserom/images/my_product/etc/permissions/oplus.product.features_dolby_stereo.xml build/portrom/images/my_product/etc/permissions/oplus.product.features_dolby_stereo.xml
-    unzip -o devices/common/dolby_fix.zip -d build/portrom/images/ 
+    # Keep the donor's platform-signed AudioEffectCenter; the legacy APK breaks its system shared UID.
+    unzip -o devices/common/dolby_fix.zip -d build/portrom/images/ 'odm/*' || exit 1
 fi
 
 # Fix wechat/whatsapp volume isue
