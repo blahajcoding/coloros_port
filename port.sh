@@ -625,7 +625,7 @@ done
 
 old_face_unlock_app=$(find build/baserom/images/my_product -name "OPFaceUnlock.apk")
 services_target="build/portrom/images/system/system/framework/services.jar"
-services_cache="build/${app_patch_folder}/patched/services.jar"
+services_cache=$(dex_patch_cache_path "build/${app_patch_folder}/patched" "$services_target") || exit 1
 if install_cached_dex_patch "$services_cache" "$services_target";then
     blue "复制已经处理过的services.jar"
 elif [[ -f "$services_target" ]];then
@@ -737,7 +737,7 @@ elif [[ -f "$services_target" ]];then
 fi
 
 framework_target="build/portrom/images/system/system/framework/framework.jar"
-framework_cache="build/${app_patch_folder}/patched/framework.jar"
+framework_cache=$(dex_patch_cache_path "build/${app_patch_folder}/patched" "$framework_target") || exit 1
 if install_cached_dex_patch "$framework_cache" "$framework_target";then
     blue "复制已经处理过的framework.jar"
     # The donor sidecar contains a Merkle tree for the unmodified jar. It is
@@ -947,7 +947,7 @@ if [[ ${portIsOOS} == true ]];then
 fi
 
 targetOplusService=$(find build/portrom/images/ -type f -name "oplus-services.jar" -print -quit)
-oplus_services_cache="build/${app_patch_folder}/patched/oplus-services.jar"
+oplus_services_cache=$(dex_patch_cache_path "build/${app_patch_folder}/patched" "$targetOplusService") || exit 1
 if [[ -n "$targetOplusService" ]] &&
    install_cached_dex_patch "$oplus_services_cache" "$targetOplusService";then
     blue "复制已经处理过的oplus-services.jar"
@@ -2524,7 +2524,7 @@ if [[ ${port_android_version} == 17 ]];then
 
     blue "Replacing Wi-Fi apex"
     unzip -o devices/common/wifi_fix_a17.zip build/portrom/images
-    if [[ -d "build/portrom/images/odm/lib64/vendor.oplus.hardware.subsys_radio-V4-ndk_platform.so"
+    if [[ -d "build/portrom/images/odm/lib64/vendor.oplus.hardware.subsys_radio-V4-ndk_platform.so" ]]; then
         rm -rf build/portrom/images/odm/lib64/vendor.oplus.hardware.subsys_radio-V4-ndk_platform.so
         unzip -o devices/common/ril_fix_A17.zip -d build/portrom/images/
     fi
@@ -2615,23 +2615,19 @@ if [[ ${port_android_version} -ge 16 ]]; then
              persist.sys.renderengine.retry \
              persist.oplus.display.minifps.normalize \
              persist.oplus.display.ogfr.exclusive \
-             persist.oplus.display.vrr.pdfr; do
-        remove_prop "$p" my_product/build.prop
+             persist.oplus.display.vrr.pdfr \
+             debug.sf.disable_client_composition_cache; do
+        remove_prop "$p"
     done
 
-    for f in vendor/build.prop my_product/build.prop; do
-        [ -f "build/portrom/image/$f" ] || continue
-        remove_prop debug.sf.disable_client_composition_cache "$f"
-        printf 'debug.sf.disable_client_composition_cache=0\n' >> "build/portrom/image/$f"
-    done
 
-    RR=build/portrom/image/my_product/etc/refresh_rate_config.xml
+    RR=build/portrom/images/my_product/etc/refresh_rate_config.xml
     if [ -f "$RR" ]; then
         sed -i -E 's/[[:space:]]*extremeHighEnable="true"//g; s/[[:space:]]*maxrefreshsettings="[0-9]+"//g' "$RR"
         sed -i -E '/<extremeHighRate /d' "$RR"
         sed -i -E 's|<cameraOverride package="com.tencent.mobileqq" ?/>||' "$RR"
     fi
-    rm -f build/portrom/image/my_product/etc/sys_background_vsync_config.xml
+    rm -f build/portrom/images/my_product/etc/sys_background_vsync_config.xml
 fi
 
 

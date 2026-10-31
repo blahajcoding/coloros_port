@@ -78,6 +78,19 @@ expect_rejected "${test_dir}/shrunken.jar" "${test_dir}/source.jar" 1024
 expect_rejected "${test_dir}/gap.jar" "" 1024
 expect_rejected "${test_dir}/missing.jar" "${test_dir}/source.jar" 1024
 
+# A valid but older donor's patch must never share the current donor's key.
+cp "${test_dir}/source.jar" "${test_dir}/oplus-services.jar"
+first_cache=$(dex_patch_cache_path "$test_dir/patched" "$test_dir/oplus-services.jar")
+[[ "$first_cache" == "$(dex_patch_cache_path "$test_dir/patched" "$test_dir/oplus-services.jar")" ]]
+[[ "$first_cache" != "$test_dir/patched/oplus-services.jar" ]]
+cp "${test_dir}/valid.jar" "${test_dir}/oplus-services.jar"
+second_cache=$(dex_patch_cache_path "$test_dir/patched" "$test_dir/oplus-services.jar")
+[[ "$first_cache" != "$second_cache" ]]
+if dex_patch_cache_path "$test_dir/patched" "$test_dir/missing.jar" >/dev/null 2>&1; then
+    printf 'expected missing cache source rejection\n' >&2
+    exit 1
+fi
+
 mapfile -t selectors < <(
     python3 "${repo_dir}/bin/dex_archive.py" selectors "${test_dir}/container.jar"
 )

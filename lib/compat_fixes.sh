@@ -365,6 +365,13 @@ validate_dex_archive() {
     return 0
 }
 
+dex_patch_cache_path() {
+    local directory="$1" source="$2" source_hash
+    source_hash=$(sha256sum "$source") || return 1
+    # Build names alone can reuse patches from a different donor revision.
+    printf '%s/%s-%s.jar\n' "$directory" "$(basename "$source" .jar)" "${source_hash%% *}"
+}
+
 install_cached_dex_patch() {
     local cache="$1"
     local target="$2"
