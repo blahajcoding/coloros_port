@@ -1352,9 +1352,11 @@ if [[ -f $targetOplusLauncher ]] && [[ $base_product_first_api_level -gt 34 ]];t
 fi
 
 targetSystemUI=$(find build/portrom/images/ -name "SystemUI.apk")
-if [[ -f build/${app_patch_folder}/patched/SystemUI.apk ]]; then
+# Do not reuse caches containing stubbed panoramic state setters.
+systemui_cache="build/${app_patch_folder}/patched/SystemUI-native-transition.apk"
+if [[ -f "$systemui_cache" ]]; then
         blue "复制已经处理过的SystemUI.apk"
-        cp -rfv build/${app_patch_folder}/patched/SystemUI.apk $targetSystemUI
+        cp -rfv "$systemui_cache" $targetSystemUI
         sign_apk_in_place "$targetSystemUI" || exit 1
 
 elif [[ -f "$targetSystemUI" ]]; then
@@ -1362,21 +1364,18 @@ elif [[ -f "$targetSystemUI" ]]; then
     cp -rf $targetSystemUI tmp/$(basename $targetSystemUI).bak
     java -jar bin/apktool/APKEditor.jar d -f -i $targetSystemUI -o tmp/SystemUI $extra_args
     blue "解锁全景全屏AOD"
-    targetSmoothTransitionControllerSmali=$(find tmp/SystemUI -type f -name "SmoothTransitionController.smali")
-    python3 bin/patchmethod_v2.py "$targetSmoothTransitionControllerSmali" setPanoramicStatusForApplication
-    python3 bin/patchmethod_v2.py "$targetSmoothTransitionControllerSmali" setPanoramicSupportAllDayForApplication
+    # Keep native panoramic state publication and transition handling intact.
 
     targetAODDisplayUtilSmali=$(find tmp/SystemUI -type f -name "AODDisplayUtil.smali")
     python3 bin/patchmethod_v2.py "$targetAODDisplayUtilSmali" isPanoramicProcessTypeNotSupportAllDay -return false
     if [[ $base_product_first_api_level -gt 34 ]];then
     targetStatusBarFeatureOptionSmali=$(find tmp/SystemUI -type f -name "StatusBarFeatureOption.smali")
     python3 bin/patchmethod_v2.py "$targetStatusBarFeatureOptionSmali" isChargeVoocSpecialColorShow -return true
-    targetAodFeatureOptionSmali=$(find tmp/SystemUI -type f -name "AodFeatureOption.smali")
     fi
+    targetAodFeatureOptionSmali=$(find tmp/SystemUI -type f -name "AodFeatureOption.smali")
     python3 bin/patchmethod_v2.py $targetAodFeatureOptionSmali isSupportRamLessAod -return true
     python3 bin/patchmethod_v2.py $targetAodFeatureOptionSmali isSupportLTPO1HzAOD -return true
     python3 bin/patchmethod_v2.py $targetAodFeatureOptionSmali isDisableAodAlwaysOnDisplayMode -return false
-    python3 bin/patchmethod_v2.py $targetAodFeatureOptionSmali SmoothTransitionController -return true
     if [[ $regionmark != "CN" ]];then
         blue "解锁MyDevice"
         targetSmali=$(find tmp -type f -name "FeatureOption.smali")
@@ -1386,8 +1385,8 @@ elif [[ -f "$targetSystemUI" ]]; then
     for style_xml_file in $(find tmp/SystemUI -name "styles.xml");do 
         sed -i "s/style\/null/7f1403f6/g" $style_xml_file
     done
-    java -jar bin/apktool/APKEditor.jar b -f -i tmp/SystemUI -o build/${app_patch_folder}/patched/SystemUI.apk $extra_args
-    cp -rfv build/${app_patch_folder}/patched/SystemUI.apk $targetSystemUI
+    java -jar bin/apktool/APKEditor.jar b -f -i tmp/SystemUI -o "$systemui_cache" $extra_args
+    cp -rfv "$systemui_cache" $targetSystemUI
     sign_apk_in_place "$targetSystemUI" || exit 1
 fi
 
@@ -2293,7 +2292,7 @@ fi
 # 4. Keep the A17 Wi-Fi APEX and set config_wifiChannelUtilizationOverrideEnabled
 #    to true in the Oplus Wi-Fi RRO, avoiding the radioStats NPE.
 # 5. Label vendor overlays and /dev/ion for enforcing-mode Android 17 policy.
-if [[ ${port_android_version} == 17 ]];then
+if [[ ${port_android_version} -ge 17 ]] && [[ ${base_android_version} -le 14 ]];then
     blue "Android 17 兼容修复" "Android 17 compatibility fixes"
 
     # Some ColorOS 17 preview payloads contain the wificond executable and
@@ -2524,17 +2523,26 @@ if [[ ${port_android_version} == 17 ]];then
 
     blue "Replacing Wi-Fi apex"
     unzip -o devices/common/wifi_fix_a17.zip build/portrom/images
-    if [[ -d "build/portrom/images/odm/lib64/vendor.oplus.hardware.subsys_radio-V4-ndk_platform.so" ]]; then
+    if [[ -f "build/portrom/images/odm/lib64/vendor.oplus.hardware.subsys_radio-V4-ndk_platform.so" ]]; then
         rm -rf build/portrom/images/odm/lib64/vendor.oplus.hardware.subsys_radio-V4-ndk_platform.so
         unzip -o devices/common/ril_fix_A17.zip -d build/portrom/images/
     fi
+    if [[ -d "build/portrom/images/odm/etc/power_profile" ]];then
+        blue "Fixing device power profile config"
+        cp -rf build/portrom/images/odm/etc/power_profile build/portrom/images/my_product/etc/
+    fi
 fi
 
-
+if [[ ${port_android_version} -ge 17 ]] && [[ ${base_android_version} -le 16 ]];then
+    blue "Fixing device power profile config"
+    cp -rf build/portrom/images/odm/etc/power_profile build/portrom/images/my_product/etc/
+fi
+    
 if [[ -f devices/common/hdr_fix.zip ]] && [[ $base_android_version -le 14 ]];then
     unzip -o devices/common/hdr_fix.zip -d build/portrom/images/
     echo "persist.sys.feature.uhdr.support=true" >> build/portrom/images/my_product/etc/bruce/build.prop
 fi
+
 
 
 #自定义替换
